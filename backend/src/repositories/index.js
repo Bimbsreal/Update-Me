@@ -1,0 +1,14 @@
+export { locationRepository } from './locationRepository.js';
+export { reportRepository } from './reportRepository.js';
+export { trafficRepository } from './trafficRepository.js';
+export { userRepository, geoRepository } from './userRepository.js';
+export { fxRepository } from './fxRepository.js';
+export { officialRepository } from './officialRepository.js';
+export { fuelRepository } from './fuelRepository.js';
+export { transportRepository } from './transportRepository.js';
+export { pricesRepository } from './pricesRepository.js';
+export { alertsRepository } from './alertsRepository.js';
+export { directionsRepository } from './directionsRepository.js';
+export { communityRepository } from './communityRepository.js';
+export { notificationRepository } from './notificationRepository.js';
+export { savedPlacesRepository } from './savedPlacesRepository.js';

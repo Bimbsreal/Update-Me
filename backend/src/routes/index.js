@@ -1,0 +1,56 @@
+import { Router } from 'express';
+import healthRouter from './health.js';
+import authRouter from './auth.js';
+import geoRouter from './geo.js';
+import locationsRouter from './locations.js';
+import reportsRouter from './reports.js';
+import trafficRouter from './traffic.js';
+import fxRouter from './fx.js';
+import officialUpdatesRouter from './officialUpdates.js';
+import fuelRouter from './fuel.js';
+import transportRouter from './transport.js';
+import pricesRouter from './prices.js';
+import alertsRouter from './alerts.js';
+import directionsRouter from './directions.js';
+import communityRouter from './community.js';
+import notificationsRouter from './notifications.js';
+import userRouter from './user.js';
+import adminRouter from './admin.js';
+import exploreRouter from './explore.js';
+import homeRouter from './home.js';
+import searchRouter from './search.js';
+import { createRealtimeRouter } from '../realtime/routes.js';
+import { createStubRouter } from './stubs.js';
+
+const router = Router();
+
+router.use('/health', healthRouter);
+router.use('/auth', authRouter);
+router.use('/geo', geoRouter);
+router.use('/locations', locationsRouter);
+router.use('/search', searchRouter);
+router.use('/explore', exploreRouter);
+router.use('/home', homeRouter);
+router.use('/realtime', createRealtimeRouter());
+router.use('/reports', reportsRouter);
+router.use('/traffic', trafficRouter);
+router.use('/fx', fxRouter);
+router.use('/official-updates', officialUpdatesRouter);
+router.use('/fuel', fuelRouter);
+router.use('/transport', transportRouter);
+router.use('/prices', pricesRouter);
+router.use('/alerts', alertsRouter);
+router.use('/directions', directionsRouter);
+router.use('/community', communityRouter);
+router.use('/notifications', notificationsRouter);
+router.use('/user', userRouter);
+router.use('/admin', adminRouter);
+
+router.use('/users', createStubRouter('users'));
+router.use('/areas', createStubRouter('areas'));
+router.use('/commodities', createStubRouter('commodities'));
+router.use('/questions', createStubRouter('questions'));
+router.use('/official', createStubRouter('official'));
+router.use('/moderation', createStubRouter('moderation'));
+
+export default router;

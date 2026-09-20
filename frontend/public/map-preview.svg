@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 640" role="img" aria-hidden="true">
+  <rect width="900" height="640" fill="#D9EBE1"/>
+  <path d="M40 80h820v480H40Z" fill="#EEF6F1" stroke="#B7D7C5" stroke-width="2"/>
+  <path d="M80 160h180v90H80Z" fill="#C9E4D5" opacity="0.8"/>
+  <path d="M300 140h220v120H300Z" fill="#BFE0CF" opacity="0.85"/>
+  <path d="M560 180h220v150H560Z" fill="#C9E4D5" opacity="0.8"/>
+  <path d="M120 320h260v160H120Z" fill="#B7D7C5" opacity="0.7"/>
+  <path d="M420 300h300v180H420Z" fill="#CDE8DA" opacity="0.85"/>
+  <path d="M70 250 C250 230 380 310 520 280 C650 250 760 320 860 300" stroke="#7AA892" stroke-width="10" fill="none" stroke-linecap="round"/>
+  <path d="M140 420 C300 390 430 470 600 430 C720 405 790 450 850 440" stroke="#8FB9A2" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <circle cx="250" cy="260" r="14" fill="#D62828"/>
+  <circle cx="250" cy="260" r="6" fill="#fff"/>
+  <circle cx="520" cy="300" r="14" fill="#0A8F54"/>
+  <circle cx="520" cy="300" r="6" fill="#fff"/>
+  <circle cx="680" cy="360" r="14" fill="#1B6CA8"/>
+  <circle cx="680" cy="360" r="6" fill="#fff"/>
+  <circle cx="390" cy="430" r="14" fill="#E67E22"/>
+  <circle cx="390" cy="430" r="6" fill="#fff"/>
+  <text x="70" y="110" fill="#5B6B63" font-family="Segoe UI, sans-serif" font-size="18" font-weight="600">Nigeria · area preview</text>
+</svg>
