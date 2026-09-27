@@ -7,6 +7,7 @@ import { withSourceSyncLock } from './locks.js';
 import { resolveOfficialLocation } from './locationResolver.js';
 import { hashOfficialContent, sanitizeOfficialText } from './sanitize.js';
 import { computeSourceHealth, shouldAutoSuspend } from './sourceHealth.js';
+import { assessOfficialScope } from '../utils/officialScope.js';
 
 function log(message, meta = {}) {
   console.log(`[ingestion] ${message}`, Object.keys(meta).length ? meta : '');
@@ -110,18 +111,48 @@ export async function runSourceIngestion(sourceId, { trigger = 'manual' } = {}) 
       let updated = 0;
       let skipped = 0;
       let materiallyChanged = 0;
+      const autoPublish =
+        source.config?.autoPublish === true ||
+        source.ingestionMethod === 'fixture' ||
+        process.env.OFFICIAL_AUTO_PUBLISH === 'true';
 
       for (const item of prepared) {
         try {
-          const result = await officialRepository.upsertUpdate(item);
+          const scopeAssessment = assessOfficialScope({
+            title: item.title,
+            summary: item.summary,
+            body: item.body,
+            category: item.category,
+          });
+          let status = autoPublish ? item.status || 'published' : 'pending_review';
+          if (scopeAssessment !== 'in_scope') {
+            status = 'pending_review';
+          }
+          const result = await officialRepository.upsertUpdate({
+            ...item,
+            status,
+            entryOrigin: 'ingested',
+            scopeAssessment,
+            effectiveAt: item.effectiveAt || null,
+            expiresAt: item.expiresAt || null,
+            priority: item.priority || 'normal',
+          });
+          if (item.locationId || item.stateId || item.areaLocationIds?.length) {
+            await officialRepository.replaceUpdateAreas(result.id, {
+              locationIds: item.areaLocationIds || (item.locationId ? [item.locationId] : []),
+              stateIds: item.areaStateIds || (item.stateId ? [item.stateId] : []),
+              primaryLocationId: item.locationId || null,
+              primaryStateId: item.stateId || null,
+            });
+          }
           if (result.inserted) {
             added += 1;
-            if (item.status === 'published' || !item.status) {
+            if (result.status === 'published') {
               realtimePublisher.officialUpdated({
                 id: result.id,
                 locationId: item.locationId,
                 stateId: item.stateId,
-                status: item.status || 'published',
+                status: 'published',
                 title: item.title,
                 publishedAt: item.publishedAt,
                 source: { name: source.shortName || source.organizationName },
@@ -136,12 +167,12 @@ export async function runSourceIngestion(sourceId, { trigger = 'manual' } = {}) 
           } else if (result.changed) {
             updated += 1;
             materiallyChanged += 1;
-            if (item.status === 'published' || !item.status) {
+            if (result.status === 'published') {
               realtimePublisher.officialUpdated({
                 id: result.id,
                 locationId: item.locationId,
                 stateId: item.stateId,
-                status: item.status || 'published',
+                status: 'published',
                 title: item.title,
                 publishedAt: item.publishedAt,
                 source: { name: source.shortName || source.organizationName },

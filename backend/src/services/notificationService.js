@@ -1,7 +1,13 @@
 import { AppError } from '../middleware/errorHandler.js';
 import {
   NOTIFICATION_CATEGORIES,
+  NOTIFICATION_CHANNELS,
+  NOTIFICATION_FREQUENCIES,
+  NOTIFICATION_PRIORITIES,
+  NOTIFICATION_TYPES,
+  USER_ALERT_KINDS,
   DEFAULT_NOTIFICATION_TTL_HOURS,
+  DEFAULT_COOLDOWN_MINUTES,
   NOTIFY_TRAFFIC_SEVERITIES,
   NOTIFY_ALERT_SEVERITIES,
   categoryLabel,
@@ -10,13 +16,17 @@ import { locationRepository } from '../repositories/locationRepository.js';
 import { notificationRepository } from '../repositories/notificationRepository.js';
 import { savedPlacesRepository } from '../repositories/savedPlacesRepository.js';
 import { realtimePublisher } from '../realtime/publisher.js';
+import { alertEngine, fingerprintForEvent, isInQuietHours } from './alertEngine.js';
+import { renderNotificationTemplate } from './notificationTemplates.js';
+import { pushService } from './pushService.js';
+import { getPool } from '../db/pool.js';
 
 function dayBucket(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
 
-function expiresAtFor(category) {
-  const hours = DEFAULT_NOTIFICATION_TTL_HOURS[category] || 24;
+function expiresAtFor(category, ttlHours = null) {
+  const hours = ttlHours || DEFAULT_NOTIFICATION_TTL_HOURS[category] || 24;
   return new Date(Date.now() + hours * 60 * 60 * 1000);
 }
 
@@ -28,46 +38,81 @@ function defaultLink(category, entityType, entityId) {
     case 'road_alerts':
       return `/alerts/${entityId}`;
     case 'fuel':
-      return `/fuel/${entityId}`;
+      return `/fuel/stations/${entityId}`;
     case 'transport':
-      return `/transport/${entityId}`;
+      return `/transport/routes/${entityId}`;
     case 'prices':
-      return `/prices/${entityId}`;
+      return `/prices`;
+    case 'fx':
+      return `/fx`;
     case 'official':
       return `/official-updates/${entityId}`;
     case 'community':
       return `/community/questions/${entityId}`;
     default:
-      return null;
+      return '/notifications';
+  }
+}
+
+function formatTimeLabel(date = new Date()) {
+  try {
+    return new Intl.DateTimeFormat('en-NG', {
+      timeZone: 'Africa/Lagos',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(date);
+  } catch {
+    return date.toISOString();
   }
 }
 
 /**
- * NotificationService — in-app first; pluggable delivery later.
- * Modules call publishEvent after meaningful creates (not every confirmation).
+ * Central notification pipeline:
+ * Event → rules → preferences → location → cooldown → dedupe → generate → channel → deliver
  */
 export const notificationService = {
   taxonomy() {
     return {
       categories: NOTIFICATION_CATEGORIES,
-      channels: ['in_app'],
+      types: NOTIFICATION_TYPES,
+      priorities: NOTIFICATION_PRIORITIES,
+      frequencies: NOTIFICATION_FREQUENCIES,
+      channels: NOTIFICATION_CHANNELS.map((c) => ({
+        ...c,
+        available:
+          c.code === 'in_app' ||
+          (c.code === 'push' && pushService.isConfigured()) ||
+          (c.code === 'email' && false),
+      })),
+      alertKinds: USER_ALERT_KINDS,
+      push: pushService.publicConfig(),
     };
   },
 
   async getPreferences(userId) {
     await notificationRepository.ensureDefaultPreferences(userId, NOTIFICATION_CATEGORIES);
     const rows = await notificationRepository.getPreferences(userId);
-    const map = Object.fromEntries(rows.map((r) => [r.category, r.enabled]));
-    return NOTIFICATION_CATEGORIES.map((c) => ({
-      category: c.code,
-      label: c.label,
-      enabled: map[c.code] ?? c.defaultEnabled,
-    }));
+    const map = Object.fromEntries(rows.map((r) => [r.category, r]));
+    return NOTIFICATION_CATEGORIES.map((c) => {
+      const row = map[c.code];
+      return {
+        category: c.code,
+        label: c.label,
+        enabled: row?.enabled ?? c.defaultEnabled,
+        frequency: row?.frequency || 'immediate',
+        channels: row?.channels || ['in_app'],
+        quietHoursEnabled: row?.quietHoursEnabled || false,
+        quietStartMinute: row?.quietStartMinute ?? null,
+        quietEndMinute: row?.quietEndMinute ?? null,
+        timezone: row?.timezone || 'Africa/Lagos',
+        criticalOverridesQuiet: row?.criticalOverridesQuiet !== false,
+      };
+    });
   },
 
   async updatePreferences(userId, preferences) {
     for (const item of preferences) {
-      await notificationRepository.upsertPreference(userId, item.category, item.enabled);
+      await notificationRepository.upsertPreference(userId, item);
     }
     return this.getPreferences(userId);
   },
@@ -75,10 +120,13 @@ export const notificationService = {
   async isCategoryEnabled(userId, category) {
     const prefs = await this.getPreferences(userId);
     const row = prefs.find((p) => p.category === category);
-    return Boolean(row?.enabled);
+    if (!row?.enabled) return false;
+    if (row.frequency === 'off') return false;
+    return true;
   },
 
   async list(userId, query) {
+    await notificationRepository.expireDue().catch(() => 0);
     return notificationRepository.list(userId, query);
   },
 
@@ -97,8 +145,14 @@ export const notificationService = {
     return { updated: count };
   },
 
+  async archive(userId, id) {
+    const ok = await notificationRepository.archive(userId, id);
+    if (!ok) throw new AppError('Notification not found.', 404, 'NOTIFICATION_NOT_FOUND');
+    return { archived: true };
+  },
+
   /**
-   * Core publish API. Dedupes on (userId, dedupeKey). Never throws to callers of notify* helpers.
+   * Core publish API with preference, quiet hours, cooldown, rate-limit, dedupe.
    */
   async publish({
     userId,
@@ -114,14 +168,106 @@ export const notificationService = {
     dedupeKey,
     expiresAt,
     actorUserId,
+    ruleCode = null,
+    templateKey = null,
+    templateVars = null,
+    sourceRef = null,
+    fingerprintExtra = '',
+    subscriptionId = null,
+    skipQuietHours = false,
+    channels = null,
   }) {
     if (!userId) return { skipped: true, reason: 'no_user' };
     if (actorUserId && actorUserId === userId) {
       return { skipped: true, reason: 'actor_is_recipient' };
     }
 
-    const enabled = await this.isCategoryEnabled(userId, category);
-    if (!enabled) return { skipped: true, reason: 'category_disabled' };
+    const pref = (await notificationRepository.getPreference(userId, category)) || {
+      enabled: NOTIFICATION_CATEGORIES.find((c) => c.code === category)?.defaultEnabled,
+      frequency: 'immediate',
+      channels: ['in_app'],
+      quietHoursEnabled: false,
+      timezone: 'Africa/Lagos',
+      criticalOverridesQuiet: true,
+    };
+
+    if (!pref.enabled || pref.frequency === 'off') {
+      return { skipped: true, reason: 'category_disabled' };
+    }
+    // Digest/daily_summary: still store in-app immediately as a generated inbox item,
+    // but skip push/email fan-out (batched later).
+    const deferChannels = pref.frequency === 'digest' || pref.frequency === 'daily_summary';
+
+    const rule = ruleCode ? await alertEngine.getRule(ruleCode) : null;
+    if (rule && !rule.enabled) return { skipped: true, reason: 'rule_disabled' };
+
+    const effectivePriority = priority || rule?.priority || 'normal';
+    const cooldownMinutes =
+      rule?.cooldownMinutes ?? DEFAULT_COOLDOWN_MINUTES[category] ?? 30;
+
+    if (
+      !skipQuietHours &&
+      isInQuietHours({
+        quietHoursEnabled: pref.quietHoursEnabled,
+        quietStartMinute: pref.quietStartMinute,
+        quietEndMinute: pref.quietEndMinute,
+        timezone: pref.timezone,
+        priority: effectivePriority,
+        criticalOverridesQuiet: pref.criticalOverridesQuiet,
+      })
+    ) {
+      await alertEngine.recordDelivery({
+        userId,
+        channel: 'in_app',
+        status: 'suppressed',
+        errorCode: 'quiet_hours',
+      });
+      return { skipped: true, reason: 'quiet_hours' };
+    }
+
+    const withinLimit = await alertEngine.withinUserHourlyLimit(userId);
+    if (!withinLimit) {
+      await alertEngine.recordDelivery({
+        userId,
+        channel: 'in_app',
+        status: 'suppressed',
+        errorCode: 'rate_limited',
+      });
+      return { skipped: true, reason: 'rate_limited' };
+    }
+
+    const fingerprint = fingerprintForEvent({
+      category,
+      relatedEntityType,
+      relatedEntityId,
+      subscriptionId,
+      extra: fingerprintExtra,
+    });
+
+    const cooldown = await alertEngine.checkCooldown({
+      userId,
+      fingerprint,
+      category,
+      priority: effectivePriority,
+    });
+    if (!cooldown.allowed) {
+      await alertEngine.recordDelivery({
+        userId,
+        channel: 'in_app',
+        status: 'suppressed',
+        errorCode: 'cooldown',
+      });
+      return { skipped: true, reason: 'cooldown', suppressUntil: cooldown.suppressUntil };
+    }
+
+    let finalTitle = title;
+    let finalMessage = message;
+    const tplKey = templateKey || rule?.templateKey || null;
+    if (tplKey && templateVars) {
+      const rendered = renderNotificationTemplate(tplKey, templateVars);
+      finalTitle = rendered.title;
+      finalMessage = rendered.message;
+    }
 
     const key =
       dedupeKey ||
@@ -129,33 +275,87 @@ export const notificationService = {
 
     const created = await notificationRepository.create({
       userId,
+      channel: 'in_app',
       category,
       type,
-      title,
-      message,
-      priority,
+      title: finalTitle,
+      message: finalMessage,
+      priority: effectivePriority,
       relatedEntityType,
       relatedEntityId,
       locationId,
       linkPath: linkPath || defaultLink(category, relatedEntityType, relatedEntityId),
       dedupeKey: key,
-      expiresAt: expiresAt || expiresAtFor(category),
+      expiresAt: expiresAt || expiresAtFor(category, rule?.ttlHours),
+      status: 'delivered',
+      sourceRef,
+      templateKey: tplKey,
+      metadata: { ruleCode, fingerprint, escalated: cooldown.reason === 'severity_escalation' },
     });
 
-    if (created?.duplicate) return { skipped: true, reason: 'duplicate' };
+    if (created?.duplicate) {
+      await alertEngine.recordDelivery({
+        userId,
+        channel: 'in_app',
+        status: 'suppressed',
+        errorCode: 'duplicate',
+      });
+      return { skipped: true, reason: 'duplicate' };
+    }
+
+    await alertEngine.recordCooldown({
+      userId,
+      fingerprint,
+      category,
+      priority: effectivePriority,
+      cooldownMinutes,
+    });
+
+    await alertEngine.recordDelivery({
+      notificationId: created.id,
+      userId,
+      channel: 'in_app',
+      status: 'delivered',
+    });
+
     if (created) {
       realtimePublisher.notificationCreated({
         ...created,
         userId,
       });
     }
-    return { notification: created };
+
+    const wantedChannels = channels || pref.channels || ['in_app'];
+    if (!deferChannels && wantedChannels.includes('push')) {
+      try {
+        const pushResult = await pushService.deliverToUser(userId, {
+          id: created.id,
+          title: created.title,
+          message: created.message,
+          linkPath: created.linkPath,
+          dedupeKey: key,
+        });
+        await alertEngine.recordDelivery({
+          notificationId: created.id,
+          userId,
+          channel: 'push',
+          status: pushResult.skipped ? 'suppressed' : pushResult.delivered > 0 ? 'sent' : 'failed',
+          errorCode: pushResult.reason || null,
+        });
+      } catch (err) {
+        await alertEngine.recordDelivery({
+          notificationId: created.id,
+          userId,
+          channel: 'push',
+          status: 'failed',
+          errorMessage: err?.message || 'push_failed',
+        });
+      }
+    }
+
+    return { notification: created, escalated: cooldown.reason === 'severity_escalation' };
   },
 
-  /**
-   * Fan-out to users who saved this location (area or route endpoint).
-   * Fire-and-forget safe: errors are returned, not thrown by notify* wrappers.
-   */
   async publishForLocation(locationId, event) {
     if (!locationId) return { notified: 0 };
     const userIds = await savedPlacesRepository.findSubscriberUserIds(locationId);
@@ -173,68 +373,242 @@ export const notificationService = {
     return { notified, results };
   },
 
-  /** Meaningful traffic only — heavy / standstill / blocked. */
   async notifyTrafficReport(report, { actorUserId } = {}) {
     if (!NOTIFY_TRAFFIC_SEVERITIES.has(report.severity)) {
       return { skipped: true, reason: 'not_significant' };
     }
     const locationId = report.location?.id || report.locationId;
     const road = report.road?.name || report.roadName;
-    const title = road
-      ? `${report.severityLabel || report.severity} reported on ${road}`
-      : `Significant traffic near your saved place`;
+    const locationName = report.location?.name || 'your saved place';
+    const priority =
+      report.severity === 'blocked'
+        ? 'critical'
+        : report.severity === 'standstill'
+          ? 'urgent'
+          : 'important';
     return this.publishForLocation(locationId, {
       category: 'traffic',
-      type: 'traffic.significant',
-      title,
+      type: report.severity === 'blocked' ? 'traffic.closure' : 'traffic.significant',
+      ruleCode: 'traffic_significant',
+      templateKey: report.severity === 'blocked' ? 'traffic.closure' : 'traffic.alert',
+      templateVars: {
+        road: road || 'a nearby road',
+        location: locationName,
+        severity: report.severityLabel || report.severity,
+        time: formatTimeLabel(),
+        detail: report.report?.description || report.description || '',
+      },
+      title: road
+        ? `${report.severityLabel || report.severity} reported on ${road}`
+        : `Significant traffic near your saved place`,
       message: report.report?.description || report.description || null,
-      priority: report.severity === 'blocked' || report.severity === 'standstill' ? 'urgent' : 'important',
+      priority,
       relatedEntityType: 'traffic_report',
       relatedEntityId: report.id || report.reportId,
       actorUserId,
-      dedupeKey: `traffic:report:${report.id || report.reportId}:${dayBucket()}`,
+      dedupeKey: `traffic:report:${report.id || report.reportId}`,
+      fingerprintExtra: report.severity || '',
     });
   },
 
-  /** Meaningful alerts only — caution / urgent / critical. */
   async notifySafetyAlert(alert, { actorUserId } = {}) {
     if (!NOTIFY_ALERT_SEVERITIES.has(alert.severity)) {
       return { skipped: true, reason: 'not_significant' };
     }
     const locationId = alert.location?.id || alert.locationId;
-    const title =
-      alert.report?.title ||
-      alert.title ||
-      `${categoryLabel('road_alerts')} near your saved place`;
+    const locationName = alert.location?.name || 'your saved place';
     const priority =
-      alert.severity === 'critical' || alert.severity === 'urgent' ? 'urgent' : 'important';
+      alert.severity === 'critical' ? 'critical' : alert.severity === 'urgent' ? 'urgent' : 'important';
     return this.publishForLocation(locationId, {
       category: 'road_alerts',
-      type: 'alert.significant',
-      title,
+      type: 'road.hazard',
+      ruleCode: 'road_closure_hazard',
+      templateKey: 'road.hazard',
+      templateVars: {
+        location: locationName,
+        detail: alert.report?.description || alert.description || alert.title || '',
+      },
+      title:
+        alert.report?.title ||
+        alert.title ||
+        `${categoryLabel('road_alerts')} near your saved place`,
       message: alert.report?.description || alert.description || null,
       priority,
       relatedEntityType: 'local_alert',
       relatedEntityId: alert.id,
       actorUserId,
-      dedupeKey: `road_alerts:alert:${alert.id}:${dayBucket()}`,
+      dedupeKey: `road_alerts:alert:${alert.id}`,
+      fingerprintExtra: alert.severity || '',
     });
   },
 
   async notifyOfficialUpdate(update, { locationId, actorUserId } = {}) {
     const locId = locationId || update.location?.id || update.locationId;
-    if (!locId) return { skipped: true, reason: 'no_location' };
-    return this.publishForLocation(locId, {
+    const priorityMap = {
+      critical: 'critical',
+      urgent: 'urgent',
+      important: 'important',
+      normal: 'normal',
+    };
+    const priority = priorityMap[update.priority] || 'important';
+
+    // Avoid spam: location fan-out only for important+; subscriptions handle finer filters.
+    const significant = ['important', 'urgent', 'critical'].includes(update.priority || 'important');
+
+    const payload = {
       category: 'official',
       type: 'official.advisory',
+      ruleCode: 'official_important',
+      templateKey: 'official.update',
+      templateVars: {
+        agency: update.source?.shortName || update.source?.organizationName || 'Official',
+        headline: update.title || 'Official update',
+        summary: update.summary || '',
+      },
       title: update.title || 'Official advisory for your area',
       message: update.summary || update.body || null,
-      priority: 'important',
+      priority,
       relatedEntityType: 'official_update',
       relatedEntityId: update.id,
       actorUserId,
       dedupeKey: `official:update:${update.id}`,
+      sourceRef: update.sourceId || update.source?.id || null,
+    };
+
+    if (locId && significant) {
+      return this.publishForLocation(locId, payload);
+    }
+
+    const subs = await getPool().query(
+      `SELECT DISTINCT user_id FROM user_alert_subscriptions
+       WHERE enabled = TRUE
+         AND kind IN ('official_category','official_source')
+         AND (
+           (kind = 'official_source' AND source_id = $1)
+           OR (kind = 'official_category' AND (official_category IS NULL OR official_category = $2))
+           OR (state_id IS NOT NULL AND state_id = $3)
+         )`,
+      [update.sourceId || update.source?.id || null, update.category || null, update.stateId || null]
+    );
+    let notified = 0;
+    for (const row of subs.rows) {
+      const result = await this.publish({ ...payload, userId: row.user_id });
+      if (result.notification) notified += 1;
+    }
+    if (!locId && !subs.rows.length) {
+      return { skipped: true, reason: 'no_location_or_subscription' };
+    }
+    return { notified };
+  },
+
+  async notifyFuelObservation(observation, { actorUserId } = {}) {
+    const locationId = observation.locationId || observation.station?.locationId;
+    if (!locationId) return { skipped: true, reason: 'no_location' };
+    const product = observation.fuelType || observation.product || 'Fuel';
+    const price = observation.price != null ? Number(observation.price).toLocaleString('en-NG') : '—';
+    return this.publishForLocation(locationId, {
+      category: 'fuel',
+      type: 'fuel.price',
+      ruleCode: 'fuel_price_change',
+      templateKey: 'fuel.price',
+      templateVars: {
+        location: observation.station?.name || observation.locationName || 'your area',
+        product,
+        price,
+        detail: observation.note || 'New observation recorded.',
+      },
+      title: `${product} price update near your saved place`,
+      message: `₦${price} reported.`,
+      priority: 'normal',
+      relatedEntityType: 'fuel_station',
+      relatedEntityId: observation.stationId || observation.station?.id,
+      actorUserId,
+      dedupeKey: `fuel:station:${observation.stationId || observation.station?.id}:${product}:${dayBucket()}`,
     });
+  },
+
+  async notifyCommodityThreshold(hit, { actorUserId } = {}) {
+    return this.publish({
+      userId: hit.userId,
+      category: 'prices',
+      type: 'commodity.price',
+      ruleCode: 'commodity_threshold',
+      templateKey: 'commodity.price',
+      templateVars: {
+        commodity: hit.commodityLabel || hit.commodityCode,
+        location: hit.locationName || 'selected market',
+        detail: hit.detail || `Price is now ₦${hit.price}`,
+      },
+      title: `${hit.commodityLabel || hit.commodityCode} price alert`,
+      message: hit.detail || null,
+      priority: 'important',
+      relatedEntityType: 'commodity',
+      relatedEntityId: hit.observationId || null,
+      locationId: hit.locationId || null,
+      linkPath: hit.href || '/prices',
+      actorUserId,
+      subscriptionId: hit.subscriptionId,
+      dedupeKey: `prices:sub:${hit.subscriptionId}:${dayBucket()}`,
+    });
+  },
+
+  async notifyFxThreshold(hit, { actorUserId } = {}) {
+    const pair = `${hit.base}/${hit.quote}`;
+    return this.publish({
+      userId: hit.userId,
+      category: 'fx',
+      type: 'fx.rate',
+      ruleCode: 'fx_threshold',
+      templateKey: 'fx.rate',
+      templateVars: {
+        pair,
+        rate: hit.rate,
+        threshold: hit.threshold,
+      },
+      title: `${pair} rate alert`,
+      message: `Rate is now ${hit.rate}.`,
+      priority: 'important',
+      relatedEntityType: 'fx_rate',
+      relatedEntityId: null,
+      linkPath: '/fx',
+      actorUserId,
+      subscriptionId: hit.subscriptionId,
+      dedupeKey: `fx:sub:${hit.subscriptionId}:${hit.rate}`,
+    });
+  },
+
+  async notifyEmergencyBroadcast({
+    userIds,
+    title,
+    message,
+    locationId = null,
+    expiresAt = null,
+    actorUserId = null,
+  }) {
+    let notified = 0;
+    for (const userId of userIds) {
+      const result = await this.publish({
+        userId,
+        category: 'system',
+        type: 'system.emergency',
+        ruleCode: 'system_emergency',
+        templateKey: 'system.emergency',
+        templateVars: { summary: message },
+        title,
+        message,
+        priority: 'critical',
+        relatedEntityType: 'system_emergency',
+        locationId,
+        expiresAt,
+        actorUserId,
+        skipQuietHours: true,
+        channels: ['in_app', 'push'],
+        dedupeKey: `system:emergency:${actorUserId || 'admin'}:${dayBucket()}:${userId}`,
+        fingerprintExtra: title,
+      });
+      if (result.notification) notified += 1;
+    }
+    return { notified };
   },
 };
 

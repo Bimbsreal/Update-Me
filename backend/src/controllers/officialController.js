@@ -23,6 +23,10 @@ export async function listOfficialUpdates(req, res, next) {
       from: query.from,
       to: query.to,
       freshnessHours: query.freshnessHours,
+      includeExpired: query.includeExpired,
+      q: query.q,
+      priority: query.priority,
+      updateType: query.updateType,
       page: query.page,
       limit: query.limit,
     });
@@ -35,8 +39,8 @@ export async function listOfficialUpdates(req, res, next) {
 export async function getOfficialUpdate(req, res, next) {
   try {
     const { id } = officialIdParamSchema.parse(req.params);
-    const update = await officialService.getById(id);
-    return res.json({ success: true, update });
+    const data = await officialService.getById(id);
+    return res.json({ success: true, ...data });
   } catch (error) {
     return next(error);
   }
@@ -45,8 +49,8 @@ export async function getOfficialUpdate(req, res, next) {
 export async function nearbyOfficialUpdates(req, res, next) {
   try {
     const query = officialNearbyQuerySchema.parse(req.query);
-    const results = await officialService.nearby(query);
-    return res.json({ success: true, count: results.length, results });
+    const data = await officialService.nearby(query);
+    return res.json({ success: true, ...data });
   } catch (error) {
     return next(error);
   }
@@ -55,8 +59,8 @@ export async function nearbyOfficialUpdates(req, res, next) {
 export async function contextOfficialUpdates(req, res, next) {
   try {
     const query = officialContextQuerySchema.parse(req.query);
-    const items = await officialService.forUserLocation(query);
-    return res.json({ success: true, count: items.length, items });
+    const data = await officialService.forUserLocation(query);
+    return res.json({ success: true, ...data });
   } catch (error) {
     return next(error);
   }
@@ -74,6 +78,19 @@ export async function listOfficialSourcesPublic(_req, res, next) {
   try {
     const sources = await officialService.listPublicSources();
     return res.json({ success: true, sources });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+export async function getOfficialSourcePublic(req, res, next) {
+  try {
+    const { id } = officialSourceIdParamSchema.parse(req.params);
+    const data = await officialService.getPublicSource(id, {
+      limit: 30,
+      includeExpired: false,
+    });
+    return res.json({ success: true, ...data });
   } catch (error) {
     return next(error);
   }

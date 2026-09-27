@@ -20,6 +20,10 @@ class RealtimeBroker {
     this.connections = new Map();
     this._eventSeq = 0;
     this._cleanupTimer = null;
+    this._writeErrors = 0;
+    this._disconnects = 0;
+    this._lastErrorAt = null;
+    this._lastErrorMessage = null;
   }
 
   start() {
@@ -113,6 +117,7 @@ class RealtimeBroker {
     if (!conn) return;
     if (conn.heartbeatTimer) clearInterval(conn.heartbeatTimer);
     this.connections.delete(connectionId);
+    this._disconnects += 1;
     try {
       if (!conn.res.writableEnded) conn.res.end();
     } catch {
@@ -201,7 +206,10 @@ class RealtimeBroker {
       conn.res.write(`data: ${data}\n\n`);
       conn.lastActivityAt = Date.now();
       return true;
-    } catch {
+    } catch (err) {
+      this._writeErrors += 1;
+      this._lastErrorAt = new Date().toISOString();
+      this._lastErrorMessage = String(err?.message || 'sse_write_failed').slice(0, 120);
       this.remove(conn.id);
       return false;
     }
@@ -211,6 +219,10 @@ class RealtimeBroker {
     return {
       connections: this.connections.size,
       users: new Set([...this.connections.values()].map((c) => c.userId)).size,
+      writeErrors: this._writeErrors,
+      disconnects: this._disconnects,
+      lastErrorAt: this._lastErrorAt,
+      lastErrorMessage: this._lastErrorMessage,
     };
   }
 }

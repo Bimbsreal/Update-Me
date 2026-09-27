@@ -10,6 +10,19 @@ import { cn } from '@/lib/cn';
 
 const STEPS = ['commodity', 'variant', 'price', 'place', 'review'];
 
+const PRICING_CONTEXT_OPTIONS = [
+  { id: 'retail', label: 'Retail' },
+  { id: 'market', label: 'Open market' },
+  { id: 'supermarket', label: 'Supermarket' },
+  { id: 'local_seller', label: 'Local / roadside seller' },
+  { id: 'wholesale', label: 'Wholesale' },
+];
+
+function toLocalInputValue(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 export function PricesComposer({
   onSubmitted,
   presetCommodity = null,
@@ -23,7 +36,8 @@ export function PricesComposer({
   const [variantId, setVariantId] = useState(presetVariant?.id || '');
   const [priceAmount, setPriceAmount] = useState('');
   const [placeLabel, setPlaceLabel] = useState('');
-  const [observedAt, setObservedAt] = useState('');
+  const [pricingContext, setPricingContext] = useState('market');
+  const [observedAt, setObservedAt] = useState(() => toLocalInputValue());
   const [notes, setNotes] = useState('');
   const [locationId, setLocationId] = useState(user?.currentArea?.locationId || '');
   const [locationLabel, setLocationLabel] = useState(
@@ -63,7 +77,8 @@ export function PricesComposer({
         locationId,
         priceAmount: Number(priceAmount),
         placeLabel: placeLabel.trim() || undefined,
-        placeType: 'market',
+        placeType: pricingContext === 'supermarket' ? 'supermarket' : 'market',
+        pricingContext,
         observedAt: observedAt ? new Date(observedAt).toISOString() : undefined,
         notes: notes.trim() || undefined,
       });
@@ -207,12 +222,28 @@ export function PricesComposer({
             onChange={(e) => setPlaceLabel(e.target.value)}
             placeholder="e.g. Balogun Market"
           />
+          <label className="block text-sm font-medium text-ink" htmlFor="pricing-context">
+            Price context
+            <select
+              id="pricing-context"
+              value={pricingContext}
+              onChange={(e) => setPricingContext(e.target.value)}
+              className="mt-1.5 h-11 w-full rounded-control border border-surface-border px-3 text-sm"
+            >
+              {PRICING_CONTEXT_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <Input
             id="price-observed-at"
-            label="When observed (optional)"
+            label="When observed"
             type="datetime-local"
             value={observedAt}
             onChange={(e) => setObservedAt(e.target.value)}
+            max={toLocalInputValue()}
           />
           <label className="block space-y-1.5" htmlFor="price-notes">
             <span className="text-sm font-medium text-ink">Note (optional)</span>
@@ -239,6 +270,10 @@ export function PricesComposer({
             <span className="font-semibold text-ink">Price:</span> ₦ {priceAmount}
           </p>
           <p>
+            <span className="font-semibold text-ink">Context:</span>{' '}
+            {PRICING_CONTEXT_OPTIONS.find((o) => o.id === pricingContext)?.label || pricingContext}
+          </p>
+          <p>
             <span className="font-semibold text-ink">Location:</span> {locationLabel}
           </p>
           {placeLabel ? (
@@ -246,16 +281,10 @@ export function PricesComposer({
               <span className="font-semibold text-ink">Place:</span> {placeLabel}
             </p>
           ) : null}
-          {observedAt ? (
-            <p>
-              <span className="font-semibold text-ink">Observed:</span>{' '}
-              {new Date(observedAt).toLocaleString()}
-            </p>
-          ) : (
-            <p>
-              <span className="font-semibold text-ink">Observed:</span> Just now
-            </p>
-          )}
+          <p>
+            <span className="font-semibold text-ink">Observed:</span>{' '}
+            {observedAt ? new Date(observedAt).toLocaleString() : 'Just now'}
+          </p>
         </div>
       ) : null}
 

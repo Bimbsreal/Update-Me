@@ -2,20 +2,27 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { adminApi, ApiError } from '@/lib/api';
-import { EmptyState, FilterInput, Pagination } from '@/components/admin/AdminUI';
+import { EmptyState, FilterInput, FilterSelect, Pagination } from '@/components/admin/AdminUI';
+import { AdminPageHeader } from '@/components/admin/AdminContext';
 
 export default function AdminAuditLogPage() {
   const [entityType, setEntityType] = useState('');
+  const [actionPrefix, setActionPrefix] = useState('');
   const [offset, setOffset] = useState(0);
   const [data, setData] = useState({ items: [], total: 0, limit: 40 });
   const [error, setError] = useState('');
 
   const load = useCallback(() => {
     adminApi
-      .auditLog({ entityType: entityType || undefined, offset, limit: 40 })
+      .auditLog({
+        entityType: entityType || undefined,
+        actionPrefix: actionPrefix || undefined,
+        offset,
+        limit: 40,
+      })
       .then(setData)
       .catch((err) => setError(err instanceof ApiError ? err.message : 'Failed to load audit log'));
-  }, [entityType, offset]);
+  }, [entityType, actionPrefix, offset]);
 
   useEffect(() => {
     load();
@@ -25,20 +32,30 @@ export default function AdminAuditLogPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Audit log</h1>
-        <p className="mt-1 text-sm text-ink-muted">
-          Who changed what, when, and why. Ordinary users cannot modify this history.
-        </p>
-      </div>
+      <AdminPageHeader
+        breadcrumb="Operations"
+        title="Audit & admin activity"
+        subtitle="Who changed what, when, and why. Ordinary administrators cannot delete this history."
+      />
 
-      <div className="flex flex-col gap-2 sm:flex-row">
+      <div className="grid gap-2 rounded-xl border border-surface-border bg-white p-3 sm:grid-cols-3">
         <FilterInput
           label="Entity type"
           value={entityType}
           onChange={(e) => setEntityType(e.target.value)}
-          placeholder="report, user, official_source…"
+          placeholder="user, report, admin_invitation…"
         />
+        <FilterSelect
+          label="Activity module"
+          value={actionPrefix}
+          onChange={(e) => setActionPrefix(e.target.value)}
+        >
+          <option value="">All actions</option>
+          <option value="admin.">Admin access / login</option>
+          <option value="user.">User account</option>
+          <option value="moderation.">Moderation</option>
+          <option value="official.">Official sources</option>
+        </FilterSelect>
         <button
           type="button"
           onClick={() => {
@@ -70,6 +87,13 @@ export default function AdminAuditLogPage() {
                   </p>
                   {a.reason ? (
                     <p className="mt-1 text-xs text-ink-muted break-words">Reason: {a.reason}</p>
+                  ) : null}
+                  {a.previousState || a.newState ? (
+                    <p className="mt-1 text-[11px] text-ink-muted break-words">
+                      {a.previousState ? `Previous: ${JSON.stringify(a.previousState)}` : ''}
+                      {a.previousState && a.newState ? ' → ' : ''}
+                      {a.newState ? `New: ${JSON.stringify(a.newState)}` : ''}
+                    </p>
                   ) : null}
                 </div>
                 <p className="shrink-0 text-xs text-ink-muted">

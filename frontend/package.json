@@ -9,6 +9,9 @@
     "lint": "next lint",
     "test:realtime": "node --test lib/realtime.test.js",
     "test:pwa": "node --test lib/pwa.test.js",
+    "test:seo": "node --test lib/seo.test.js lib/pwa.test.js",
+    "test:geolocation": "node --test lib/geolocation.test.js lib/locationSource.test.js lib/pwa.test.js",
+    "test:admin": "node --test lib/adminNav.test.js",
     "icons:pwa": "node scripts/generate-pwa-icons.js"
   },
   "dependencies": {

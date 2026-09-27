@@ -19,6 +19,44 @@ export async function searchLocations(req, res, next) {
   }
 }
 
+export async function resolvePlace(req, res, next) {
+  try {
+    const q = String(req.query.q || req.body?.q || '').trim();
+    const lat = req.query.lat != null ? Number(req.query.lat) : req.body?.lat;
+    const lng = req.query.lng != null ? Number(req.query.lng) : req.body?.lng;
+    const data = await locationService.resolvePlace({
+      q,
+      lat: Number.isFinite(lat) ? lat : undefined,
+      lng: Number.isFinite(lng) ? lng : undefined,
+      userId: req.auth?.userId || null,
+    });
+    return res.json({ success: true, ...data });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+export async function geocodeForward(req, res, next) {
+  try {
+    const q = String(req.query.q || '').trim();
+    const data = await locationService.geocodeForward(q);
+    return res.json({ success: true, ...data });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+export async function geocodeReverse(req, res, next) {
+  try {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const data = await locationService.geocodeReverse({ lat, lng });
+    return res.json({ success: true, ...data });
+  } catch (error) {
+    return next(error);
+  }
+}
+
 export async function getLocation(req, res, next) {
   try {
     const id = req.params.id;

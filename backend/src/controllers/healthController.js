@@ -1,5 +1,6 @@
 import { checkDatabaseConnection } from '../db/pool.js';
 import { env } from '../config/env.js';
+import { systemHealthService } from '../services/systemHealthService.js';
 
 /** Liveness — process is up. No dependency checks. */
 export async function getLive(_req, res) {
@@ -29,6 +30,8 @@ export async function getReady(_req, res) {
     },
   };
 
+  // PostGIS is optional for readiness (Haversine fallback exists).
+  // Surface presence only outside production.
   if (env.NODE_ENV !== 'production' && database.connected) {
     payload.checks.postgis = database.postgis_enabled ? 'enabled' : 'missing';
   }
@@ -36,7 +39,12 @@ export async function getReady(_req, res) {
   return res.status(ready ? 200 : 503).json(payload);
 }
 
-/** Back-compat combined health — uses readiness semantics (503 when DB down). */
-export async function getHealth(req, res) {
-  return getReady(req, res);
+/**
+ * Combined health — healthy | degraded | unhealthy.
+ * Optional providers never mark the process unhealthy.
+ */
+export async function getHealth(_req, res) {
+  const model = await systemHealthService.getPublicHealthModel();
+  const httpStatus = model.status === 'unhealthy' ? 503 : 200;
+  return res.status(httpStatus).json(model);
 }

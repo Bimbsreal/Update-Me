@@ -9,8 +9,9 @@ import {
   priceIdParamSchema,
   priceSummaryQuerySchema,
 } from '../validators/prices.js';
-import { PRICE_HISTORY_PERIODS, PRICE_PLACE_TYPES } from '../config/prices.js';
+import { PRICE_HISTORY_PERIODS, PRICE_PLACE_TYPES, COMMODITY_PRICING_CONTEXTS } from '../config/prices.js';
 import { pricesService } from '../services/pricesService.js';
+import { commodityAdminService } from '../services/commodityAdminService.js';
 
 export async function getPricesTaxonomy(_req, res, next) {
   try {
@@ -21,6 +22,7 @@ export async function getPricesTaxonomy(_req, res, next) {
         commodities,
         placeTypes: PRICE_PLACE_TYPES,
         historyPeriods: PRICE_HISTORY_PERIODS,
+        pricingContexts: COMMODITY_PRICING_CONTEXTS,
       },
     });
   } catch (error) {
@@ -51,7 +53,34 @@ export async function nearbyPrices(req, res, next) {
   try {
     const query = nearbyPricesQuerySchema.parse(req.query);
     const results = await pricesService.nearby(query);
-    return res.json({ success: true, count: results.length, results });
+    return res.json({
+      success: true,
+      count: results.length,
+      results,
+      asOf: new Date().toISOString(),
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+export async function comparePrices(req, res, next) {
+  try {
+    const result = await commodityAdminService.compareNearby({
+      commodity: req.query.commodity,
+      variant: req.query.variant,
+      locationId: req.query.locationId,
+      lat: req.query.lat != null ? Number(req.query.lat) : undefined,
+      lng: req.query.lng != null ? Number(req.query.lng) : undefined,
+      pricingContext: req.query.pricingContext || 'retail',
+      radiusKm: req.query.radiusKm,
+      limit: req.query.limit,
+    });
+    return res.json({
+      success: true,
+      ...result,
+      asOf: new Date().toISOString(),
+    });
   } catch (error) {
     return next(error);
   }
@@ -72,7 +101,11 @@ export async function getPriceDetail(req, res, next) {
     const params = priceCommodityVariantParamSchema.parse(req.params);
     const query = priceDetailQuerySchema.parse(req.query);
     const data = await pricesService.getDetail(params.commodity, params.variant, query);
-    return res.json({ success: true, ...data });
+    return res.json({
+      success: true,
+      ...data,
+      asOf: new Date().toISOString(),
+    });
   } catch (error) {
     return next(error);
   }

@@ -20,9 +20,22 @@ export const createPriceReportSchema = z
     placeId: uuidSchema.optional(),
     placeLabel: z.string().trim().min(2).max(160).optional(),
     placeType: placeTypeEnum.optional().default('market'),
+    pricingContext: z
+      .enum([
+        'retail',
+        'wholesale',
+        'market',
+        'supermarket',
+        'local_seller',
+        'official_publication',
+        'other',
+      ])
+      .optional()
+      .default('retail'),
     notes: z.string().trim().max(4000).optional(),
     title: z.string().trim().min(3).max(160).optional(),
     observedAt: z.coerce.date().optional(),
+    sourceReference: z.string().trim().min(2).max(240).optional(),
   })
   .superRefine((data, ctx) => {
     if (!data.commodityId && !data.commodityCode) {
@@ -102,4 +115,6 @@ export const priceCorrectSchema = z.object({
 
 export const priceSummaryQuerySchema = z.object({
   locationId: uuidSchema.optional(),
+  commodity: z.string().trim().min(1).max(80).optional(),
+  hours: z.coerce.number().int().min(1).max(168).optional().default(24),
 });

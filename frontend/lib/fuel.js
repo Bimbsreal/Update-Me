@@ -3,6 +3,7 @@ import { statusClassMap } from '@/lib/status';
 export const FUEL_TYPES = [
   { value: 'pms', label: 'PMS / Petrol', shortLabel: 'Petrol', defaultUnit: 'litre' },
   { value: 'ago', label: 'AGO / Diesel', shortLabel: 'Diesel', defaultUnit: 'litre' },
+  { value: 'dpk', label: 'DPK / Kerosene', shortLabel: 'Kerosene', defaultUnit: 'litre' },
   { value: 'lpg', label: 'LPG / Cooking Gas', shortLabel: 'LPG', defaultUnit: 'kg' },
 ];
 

@@ -14,6 +14,8 @@ import {
   listFuelReports,
   listFuelStations,
   nearbyFuel,
+  compareFuel,
+  stationPriceHistory,
 } from '../controllers/fuelController.js';
 
 const createLimiter = rateLimit({
@@ -58,8 +60,10 @@ const router = Router();
 router.get('/taxonomy', getFuelTaxonomy);
 router.get('/summary', fuelSummary);
 router.get('/nearby', nearbyFuel);
+router.get('/compare', compareFuel);
 router.get('/stations', listFuelStations);
 router.post('/stations', requireAuth, createLimiter, createFuelStation);
+router.get('/stations/:id/history', stationPriceHistory);
 router.get('/stations/:id', getFuelStation);
 router.get('/reports', listFuelReports);
 router.post('/reports', requireAuth, createLimiter, createFuelReport);

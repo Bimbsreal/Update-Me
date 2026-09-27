@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { NotificationCard } from '@/components/notifications/NotificationCard';
 import { Button } from '@/components/ui/Button';
@@ -61,6 +62,15 @@ export default function NotificationsPage() {
     }
   }
 
+  async function archiveItem(item) {
+    try {
+      await notificationsApi.archive(item.id);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not archive.');
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -73,12 +83,17 @@ export default function NotificationsPage() {
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-ink-muted">
             In-app alerts for meaningful changes near your saved areas and routes — not every
-            community confirmation.
+            community confirmation. Manage preferences and price/FX alerts in Profile.
           </p>
         </div>
-        <Button type="button" variant="secondary" disabled={busy || unreadCount === 0} onClick={markAll}>
-          {busy ? 'Updating…' : 'Mark all as read'}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button as={Link} href="/profile" variant="ghost" size="sm">
+            Preferences
+          </Button>
+          <Button type="button" variant="secondary" disabled={busy || unreadCount === 0} onClick={markAll}>
+            {busy ? 'Updating…' : 'Mark all as read'}
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -136,7 +151,7 @@ export default function NotificationsPage() {
       ) : items.length ? (
         <div className="grid gap-3">
           {items.map((item) => (
-            <NotificationCard key={item.id} item={item} onOpen={openItem} />
+            <NotificationCard key={item.id} item={item} onOpen={openItem} onArchive={archiveItem} />
           ))}
         </div>
       ) : (

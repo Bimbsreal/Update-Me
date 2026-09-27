@@ -1,4 +1,5 @@
 import { AppError } from '../middleware/errorHandler.js';
+import { getPool } from '../db/pool.js';
 import { locationRepository } from '../repositories/locationRepository.js';
 import { reportRepository } from '../repositories/reportRepository.js';
 import { refreshCorroborationForReport } from './dataQualityService.js';
@@ -59,7 +60,27 @@ function snapshot(raw) {
 export const reportService = {
   listCategories: () => reportRepository.listCategories(),
 
+  async assertCanSubmit(userId) {
+    const result = await getPool().query(
+      `SELECT reporting_disabled_at, reporting_disabled_reason, suspended_at, is_active
+       FROM users WHERE id = $1`,
+      [userId]
+    );
+    const u = result.rows[0];
+    if (!u || !u.is_active || u.suspended_at) {
+      throw new AppError('Account cannot submit reports.', 403, 'ACCOUNT_RESTRICTED');
+    }
+    if (u.reporting_disabled_at) {
+      throw new AppError(
+        u.reporting_disabled_reason || 'Reporting privileges are temporarily restricted.',
+        403,
+        'REPORTING_DISABLED'
+      );
+    }
+  },
+
   async create(userId, input) {
+    await this.assertCanSubmit(userId);
     const category = await reportRepository.findCategoryByCode(input.category);
     if (!category) {
       throw new AppError('Unknown report category.', 400, 'INVALID_CATEGORY');
@@ -194,6 +215,7 @@ export const reportService = {
   },
 
   async confirm(userId, id, { type, note }) {
+    await this.assertCanSubmit(userId);
     const raw = await reportRepository.findRawById(id);
     if (!raw) throw new AppError('Report not found.', 404, 'REPORT_NOT_FOUND');
     if (raw.status === 'removed' || raw.status === 'expired') {
@@ -256,6 +278,7 @@ export const reportService = {
   },
 
   async flag(userId, id, { reason, details }) {
+    await this.assertCanSubmit(userId);
     const raw = await reportRepository.findRawById(id);
     if (!raw) throw new AppError('Report not found.', 404, 'REPORT_NOT_FOUND');
     if (raw.status === 'removed') {

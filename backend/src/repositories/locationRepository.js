@@ -155,7 +155,17 @@ export const locationRepository = {
     where.push(`(
       loc.search_vector @@ plainto_tsquery('simple', $${qIndex})
       OR loc.name ILIKE '%' || $${qIndex} || '%'
+      OR loc.normalized_name ILIKE '%' || lower($${qIndex}) || '%'
       OR loc.search_document ILIKE '%' || $${qIndex} || '%'
+      OR similarity(loc.normalized_name, lower($${qIndex})) > 0.35
+      OR EXISTS (
+        SELECT 1 FROM location_aliases la
+        WHERE la.location_id = loc.id
+          AND (
+            la.alias ILIKE '%' || $${qIndex} || '%'
+            OR la.normalized_alias ILIKE '%' || lower($${qIndex}) || '%'
+          )
+      )
     )`);
 
     if (type) {
@@ -189,9 +199,11 @@ export const locationRepository = {
          END,
          CASE
            WHEN lower(loc.name) = lower($${qIndex}) THEN 0
+           WHEN loc.normalized_name = lower($${qIndex}) THEN 0
            WHEN lower(loc.name) LIKE lower($${qIndex}) || '%' THEN 1
            ELSE 2
          END,
+         GREATEST(similarity(COALESCE(loc.normalized_name, ''), lower($${qIndex})), 0) DESC,
          loc.name ASC
        LIMIT $${params.length}`,
       params
@@ -324,13 +336,23 @@ export const locationRepository = {
 
   async listLgas(stateId) {
     const result = await getPool().query(
-      `SELECT id, state_id, name, code, latitude, longitude
-       FROM lgas
-       WHERE state_id = $1 AND is_active = TRUE
-       ORDER BY name ASC`,
+      `SELECT l.id, l.state_id, l.name, l.code, l.latitude, l.longitude,
+              loc.id AS location_id
+       FROM lgas l
+       LEFT JOIN locations loc ON loc.type = 'lga' AND loc.lga_id = l.id AND loc.status = 'active'
+       WHERE l.state_id = $1 AND l.is_active = TRUE
+       ORDER BY l.name ASC`,
       [stateId]
     );
-    return result.rows;
+    return result.rows.map((row) => ({
+      id: row.id,
+      state_id: row.state_id,
+      name: row.name,
+      code: row.code,
+      latitude: row.latitude,
+      longitude: row.longitude,
+      locationId: row.location_id,
+    }));
   },
 
   async listAreas(lgaId) {
@@ -340,7 +362,9 @@ export const locationRepository = {
               loc.id AS location_id
        FROM areas a
        LEFT JOIN locations loc ON loc.type = 'area' AND loc.area_id = a.id
-       WHERE a.lga_id = $1 AND a.is_active = TRUE
+       WHERE a.lga_id = $1
+         AND a.is_active = TRUE
+         AND (loc.id IS NULL OR loc.status = 'active')
        ORDER BY a.name ASC`,
       [lgaId]
     );

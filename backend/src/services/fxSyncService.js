@@ -3,6 +3,7 @@ import { FX_SUPPORTED_PAIRS } from '../config/fx.js';
 import { getEnabledFxProviders, getFxProvider, listFxProviders } from '../fx/providers/index.js';
 import { validateNormalizedRates } from '../fx/providers/utils.js';
 import { fxRepository } from '../repositories/fxRepository.js';
+import { withJobRun, JOB_NAMES } from './jobMonitor.js';
 
 function log(message, meta = {}) {
   console.log(`[fx-sync] ${message}`, Object.keys(meta).length ? meta : '');
@@ -12,7 +13,23 @@ async function persistRates(rates) {
   let upserted = 0;
   for (const rate of rates) {
     const changed = await fxRepository.upsertObservation(rate);
-    if (changed) upserted += 1;
+    if (changed) {
+      upserted += 1;
+      try {
+        const { userAlertService } = await import('./userAlertService.js');
+        const { notificationService, safeNotify } = await import('./notificationService.js');
+        const hits = await userAlertService.evaluateFxRate({
+          base: rate.base,
+          quote: rate.quote,
+          rate: rate.rate ?? rate.mid ?? rate.value,
+        });
+        for (const hit of hits) {
+          safeNotify(notificationService.notifyFxThreshold(hit));
+        }
+      } catch (err) {
+        console.error('[fx-sync] notify failed', err?.message || err);
+      }
+    }
   }
   return upserted;
 }
@@ -180,9 +197,31 @@ export async function runScheduledFxSync(reason = 'schedule') {
   syncInFlight = true;
   try {
     log(`starting sync (${reason})`);
-    return await syncAllFxProviders({ includeHistory: reason === 'startup' || reason === 'manual' });
+    const trigger =
+      reason === 'startup' ? 'startup' : reason === 'manual' ? 'manual' : 'schedule';
+    return await withJobRun(
+      JOB_NAMES.FX_SYNC_TICK,
+      async () => {
+        const outcome = await syncAllFxProviders({
+          includeHistory: reason === 'startup' || reason === 'manual',
+        });
+        const results = outcome.results || [];
+        return {
+          status: outcome.status || 'failed',
+          recordsProcessed: results.length,
+          recordsUpdated: results.filter((r) => r.status === 'success').reduce((n, r) => n + (r.upserted || 0), 0),
+          recordsFailed: results.filter((r) => r.status === 'failed').length,
+          recordsSkipped: results.filter((r) => r.status === 'skipped').length,
+          errorSummary:
+            outcome.status === 'failed'
+              ? outcome.message || results.find((r) => r.error)?.error || 'FX sync failed'
+              : null,
+          details: { reason, results: results.map((r) => ({ provider: r.provider, status: r.status })) },
+        };
+      },
+      { trigger, details: { reason } }
+    );
   } catch (error) {
-    // Absolute safety net — never crash the process
     log('unexpected sync failure', { error: error?.message });
     return { status: 'failed', error: error?.message || 'unexpected' };
   } finally {

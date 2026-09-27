@@ -6,6 +6,7 @@ export const searchCategoryEnum = z.enum([
   'fuel',
   'transport',
   'prices',
+  'fx',
   'traffic',
   'alerts',
   'official',
@@ -13,6 +14,8 @@ export const searchCategoryEnum = z.enum([
 ]);
 
 export const searchFreshnessEnum = z.enum(['30m', '2h', 'today', 'recent', 'any']);
+
+export const searchSortEnum = z.enum(['relevance', 'newest', 'nearest', 'price']);
 
 export const globalSearchQuerySchema = z
   .object({
@@ -26,6 +29,7 @@ export const globalSearchQuerySchema = z
     radiusKm: z.coerce.number().min(0.5).max(50).default(12),
     freshness: searchFreshnessEnum.default('recent'),
     source: z.enum(['all', 'official', 'community']).default('all'),
+    sort: searchSortEnum.default('relevance'),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(40).default(20),
     mode: z.enum(['full', 'suggest']).default('full'),
@@ -46,4 +50,16 @@ export const searchSuggestQuerySchema = z.object({
   lat: z.coerce.number().min(-90).max(90).optional(),
   lng: z.coerce.number().min(-180).max(180).optional(),
   limit: z.coerce.number().int().min(1).max(20).default(12),
+});
+
+export const adminSearchAliasSchema = z.object({
+  alias: z.string().trim().min(2).max(120),
+  canonical: z.string().trim().min(2).max(120),
+  category: z.string().trim().min(2).max(40).optional().nullable(),
+  notes: z.string().trim().max(500).optional().nullable(),
+  reason: z.string().trim().min(3).max(500),
+});
+
+export const adminSearchAliasIdSchema = z.object({
+  id: z.string().uuid(),
 });

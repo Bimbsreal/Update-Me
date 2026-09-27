@@ -2,6 +2,12 @@ import bcrypt from 'bcryptjs';
 import { AppError } from '../middleware/errorHandler.js';
 import { detectContactType, normalizeContact } from '../validators/auth.js';
 import { geoRepository, userRepository } from '../repositories/userRepository.js';
+import { locationRepository } from '../repositories/locationRepository.js';
+import {
+  isWithinNigeriaBounds,
+  isLowAccuracy,
+  MAX_RESOLVE_DISTANCE_KM,
+} from '../utils/geoBounds.js';
 
 const SALT_ROUNDS = 12;
 
@@ -95,8 +101,18 @@ export const authService = {
     return userRepository.toPublic(user);
   },
 
-  async resolveLocation(lat, lng) {
-    const area = await geoRepository.findNearestArea(lat, lng);
+  async resolveLocation(lat, lng, { accuracy } = {}) {
+    if (!isWithinNigeriaBounds(lat, lng)) {
+      throw new AppError(
+        'Coordinates are outside the supported Nigeria coverage area.',
+        400,
+        'LOCATION_OUT_OF_BOUNDS'
+      );
+    }
+
+    const area = await geoRepository.findNearestArea(lat, lng, {
+      maxDistanceKm: MAX_RESOLVE_DISTANCE_KM,
+    });
     if (!area) {
       throw new AppError(
         'We could not match that location to a known area. Please choose manually.',
@@ -104,13 +120,36 @@ export const authService = {
         'LOCATION_LOOKUP_FAILED'
       );
     }
+
+    let locationId = null;
+    try {
+      const nearby = await locationRepository.nearby({
+        lat,
+        lng,
+        radiusKm: MAX_RESOLVE_DISTANCE_KM,
+        type: 'area',
+        limit: 1,
+      });
+      locationId = nearby[0]?.id || null;
+      if (!locationId) {
+        const areaLoc = await locationRepository.findAreaLocationByAreaId(area.id);
+        locationId = areaLoc?.id || null;
+      }
+    } catch {
+      locationId = null;
+    }
+
+    const lowAccuracy = isLowAccuracy(accuracy);
+
     return {
       id: area.id,
+      locationId,
       name: area.name,
       lga: area.lga_name,
       state: area.state_name,
       stateCode: area.state_code,
       distanceKm: Number(area.distance_km?.toFixed?.(1) ?? area.distance_km),
+      ...(lowAccuracy != null ? { lowAccuracy } : {}),
     };
   },
 };

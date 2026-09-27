@@ -3,9 +3,9 @@
 import Link from 'next/link';
 import { cn } from '@/lib/cn';
 import { formatRelativeTime } from '@/lib/reports';
-import { notificationHref, priorityClass } from '@/lib/notifications';
+import { notificationHref, priorityClass, priorityLabel } from '@/lib/notifications';
 
-export function NotificationCard({ item, onOpen }) {
+export function NotificationCard({ item, onOpen, onArchive }) {
   if (!item) return null;
   const href = notificationHref(item);
 
@@ -24,14 +24,18 @@ export function NotificationCard({ item, onOpen }) {
           <span className="inline-flex items-center rounded-pill bg-brand-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
             Unread
           </span>
-        ) : null}
+        ) : (
+          <span className="inline-flex items-center rounded-pill border border-surface-border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ink-muted">
+            Read
+          </span>
+        )}
         {item.expired ? (
           <span className="inline-flex items-center rounded-pill border border-surface-border bg-surface-muted px-2.5 py-1 text-[11px] font-bold text-ink-muted">
             Expired
           </span>
         ) : null}
-        <span className={cn('text-[11px] font-semibold capitalize', priorityClass(item.priority))}>
-          {item.priority}
+        <span className={cn('text-[11px] font-semibold', priorityClass(item.priority))}>
+          {priorityLabel(item.priority)}
         </span>
       </div>
 
@@ -49,9 +53,18 @@ export function NotificationCard({ item, onOpen }) {
         <p className="mt-2 text-sm text-ink-muted break-words line-clamp-3">{item.message}</p>
       ) : null}
 
-      <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-soft">
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-ink-soft">
         {item.location?.name ? <span className="break-words">{item.location.name}</span> : null}
         <span>{formatRelativeTime(item.createdAt)}</span>
+        {onArchive ? (
+          <button
+            type="button"
+            onClick={() => onArchive(item)}
+            className="min-h-11 font-semibold text-ink-muted hover:text-ink hover:underline"
+          >
+            Archive
+          </button>
+        ) : null}
       </div>
     </article>
   );

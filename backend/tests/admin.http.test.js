@@ -70,3 +70,65 @@ test('authorized admin can access dashboard', async () => {
   assert.equal(body.success, true);
   assert.equal(typeof body.dashboard.reportsAwaitingReview, 'number');
 });
+
+test('authorized admin can access moderation center APIs', async () => {
+  const { res, data, cookie } = await login('admin.local@updateme.test', 'AdminLocal123!');
+  assert.equal(res.status, 200, data.message || JSON.stringify(data));
+
+  const metrics = await fetch(`${API}/admin/moderation/metrics`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(metrics.status, 200);
+  const metricsBody = await metrics.json();
+  assert.equal(typeof metricsBody.metrics?.pending, 'number');
+
+  const queue = await fetch(`${API}/admin/moderation?view=attention&limit=10`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(queue.status, 200);
+  const queueBody = await queue.json();
+  assert.ok(Array.isArray(queueBody.items));
+  assert.ok(Array.isArray(queueBody.reasons));
+});
+
+test('authorized super admin can access roles and invitations', async () => {
+  const { res, data, cookie } = await login('admin.local@updateme.test', 'AdminLocal123!');
+  assert.equal(res.status, 200, data.message || JSON.stringify(data));
+
+  const roles = await fetch(`${API}/admin/roles`, { headers: { Cookie: cookie } });
+  assert.equal(roles.status, 200);
+  const rolesBody = await roles.json();
+  assert.equal(rolesBody.editable, false);
+  assert.ok(Array.isArray(rolesBody.roles));
+
+  const staff = await fetch(`${API}/admin/users?staffOnly=true&limit=5`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(staff.status, 200);
+  const staffBody = await staff.json();
+  assert.ok(Array.isArray(staffBody.items));
+});
+
+test('ordinary user cannot call moderation action', async () => {
+  const email = `ordinary.mod.deny.${Date.now()}@example.com`;
+  const password = 'OrdinaryUser123!';
+  const reg = await fetch(`${API}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      fullName: 'Ordinary Mod Deny',
+      contact: email,
+      password,
+      confirmPassword: password,
+    }),
+  });
+  assert.ok(reg.status === 201 || reg.status === 200);
+  const cookie = cookieFrom(reg);
+
+  const action = await fetch(`${API}/admin/moderation/report:00000000-0000-4000-8000-000000000001/action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ action: 'approve', reason: 'Should be forbidden' }),
+  });
+  assert.equal(action.status, 403);
+});

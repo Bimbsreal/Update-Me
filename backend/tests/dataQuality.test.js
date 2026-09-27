@@ -234,7 +234,65 @@ test('report API quality block shape', async () => {
   assert.ok(report.quality.source.type);
   assert.ok(report.quality.verification.state);
   assert.ok(report.quality.corroboration.label);
+  assert.ok(report.quality.confidence?.level);
+  assert.ok(Array.isArray(report.quality.confidence.reasons));
   assert.ok(Array.isArray(report.about));
+});
+
+test('quality intelligence: confidence reasons + dimensions + events', async () => {
+  const {
+    computeConfidenceWithReasons,
+    evaluateQualityDimensions,
+    qualityIntelligenceService,
+  } = await import('../src/services/qualityIntelligenceService.js');
+
+  const conf = computeConfidenceWithReasons({
+    source_type: 'official',
+    status: 'active',
+    corroboration_count: 3,
+    location_id: '00000000-0000-4000-8000-000000000001',
+    last_confirmed_at: new Date(),
+  });
+  assert.ok(['low', 'medium', 'high'].includes(conf.level));
+  assert.ok(conf.reasons.length >= 2);
+  assert.match(conf.note, /not absolute truth/i);
+
+  const dims = evaluateQualityDimensions({
+    title: 'Test',
+    location_id: '00000000-0000-4000-8000-000000000001',
+    status: 'active',
+    source_type: 'community',
+    created_at: new Date(),
+    corroboration_count: 1,
+  });
+  assert.equal(dims.completeness.status, 'pass');
+  assert.ok(dims.freshness);
+  assert.ok(dims.provenance);
+
+  const dash = await qualityIntelligenceService.intelligenceDashboard();
+  assert.equal(dash.framework.opaqueTrustScore, false);
+  assert.equal(dash.framework.autoMerge, false);
+  assert.ok(Array.isArray(dash.domains));
+
+  const domain = await qualityIntelligenceService.domainDashboard('traffic');
+  assert.equal(domain.domain, 'traffic');
+  assert.ok(domain.percentages);
+
+  const rules = await qualityIntelligenceService.listRules();
+  assert.ok(rules.items.some((r) => r.code === 'price_positive'));
+
+  const ev = await qualityIntelligenceService.recordEvent({
+    eventType: 'anomaly_detected',
+    severity: 'medium',
+    domain: 'fuel',
+    entityType: 'report',
+    title: 'Test anomaly event',
+    explanation: 'Unit test anomaly — safe to resolve.',
+    reasons: ['Automated test'],
+  });
+  assert.ok(ev.id);
+  const queue = await qualityIntelligenceService.reviewQueue({ limit: 10 });
+  assert.ok(Array.isArray(queue.items));
 });
 
 test.after(async () => {

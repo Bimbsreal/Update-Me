@@ -52,6 +52,14 @@ export function QualitySignals({ quality, about, conflict, className, compact = 
             <span>{corroboration.label}</span>
           </>
         ) : null}
+        {quality?.confidence?.label ? (
+          <>
+            <span aria-hidden>·</span>
+            <span title={(quality.confidence.reasons || []).join('; ')}>
+              Confidence {quality.confidence.label}
+            </span>
+          </>
+        ) : null}
       </div>
 
       {conflict?.hasConflict ? (

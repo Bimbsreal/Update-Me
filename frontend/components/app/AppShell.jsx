@@ -12,8 +12,8 @@ import { Button } from '@/components/ui/Button';
 import { notificationsApi } from '@/lib/api';
 import { cn } from '@/lib/cn';
 
-const navItems = [
-  { href: '/home', label: 'Home', icon: 'home' },
+const publicNavItems = [
+  { href: '/explore', label: 'Explore', icon: 'explore' },
   { href: '/traffic', label: 'Traffic', icon: 'traffic' },
   { href: '/fuel', label: 'Fuel', icon: 'fuel' },
   { href: '/transport', label: 'Transport', icon: 'transport' },
@@ -21,19 +21,31 @@ const navItems = [
   { href: '/alerts', label: 'Alerts', icon: 'alerts' },
   { href: '/directions', label: 'Directions', icon: 'directions' },
   { href: '/community', label: 'Community', icon: 'community' },
-  { href: '/explore', label: 'Explore', icon: 'explore' },
+  { href: '/official-updates', label: 'Official', icon: 'alerts' },
+];
+
+const privateNavItems = [
+  { href: '/home', label: 'Home', icon: 'home' },
   { href: '/notifications', label: 'Notifications', icon: 'notifications' },
   { href: '/app/report', label: 'Report', icon: 'report', prominent: true },
   { href: '/profile', label: 'Profile', icon: 'profile' },
 ];
 
 /** Compact mobile primary destinations — full list remains in the sidebar. */
-const mobileNavItems = [
+const mobileNavItemsAuthed = [
   { href: '/home', label: 'Home', icon: 'home' },
   { href: '/notifications', label: 'Inbox', icon: 'notifications' },
   { href: '/explore', label: 'Explore', icon: 'explore' },
   { href: '/app/report', label: 'Report', icon: 'report', prominent: true },
   { href: '/profile', label: 'Profile', icon: 'profile' },
+];
+
+const mobileNavItemsGuest = [
+  { href: '/explore', label: 'Explore', icon: 'explore' },
+  { href: '/traffic', label: 'Traffic', icon: 'traffic' },
+  { href: '/fuel', label: 'Fuel', icon: 'fuel' },
+  { href: '/official-updates', label: 'Official', icon: 'alerts' },
+  { href: '/login', label: 'Sign in', icon: 'profile' },
 ];
 
 function NavIcon({ name }) {
@@ -154,10 +166,14 @@ export function AppShell({ children }) {
 function AppShellInner({ children }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, logout, loading, setLocation } = useAuth();
+  const { user, logout, loading, setLocation, isAuthenticated } = useAuth();
   const { subscribe } = useRealtime();
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const navItems = isAuthenticated
+    ? [...privateNavItems.slice(0, 1), ...publicNavItems, ...privateNavItems.slice(1)]
+    : publicNavItems;
+  const mobileNavItems = isAuthenticated ? mobileNavItemsAuthed : mobileNavItemsGuest;
 
   useEffect(() => {
     if (!user) {
@@ -220,21 +236,32 @@ function AppShellInner({ children }) {
           />
           <div className="flex min-w-0 items-center gap-2">
             <LiveStatusIndicator className="hidden min-[400px]:inline-flex" />
-            <Link
-              href="/notifications"
-              className="relative inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-ink-muted hover:bg-brand-50 hover:text-brand-700"
-              aria-label={
-                unreadCount ? `Notifications, ${unreadCount} unread` : 'Notifications'
-              }
-            >
-              <NavIcon name="notifications" />
-              {unreadCount > 0 ? (
-                <span className="absolute right-1.5 top-1.5 inline-flex min-w-4 items-center justify-center rounded-full bg-brand-600 px-1 text-[9px] font-bold leading-4 text-white">
-                  {unreadCount > 9 ? '9+' : unreadCount}
-                </span>
-              ) : null}
-            </Link>
-            <AreaChip area={user?.currentArea} onClick={() => setSelectorOpen(true)} />
+            {isAuthenticated ? (
+              <Link
+                href="/notifications"
+                className="relative inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-ink-muted hover:bg-brand-50 hover:text-brand-700"
+                aria-label={
+                  unreadCount ? `Notifications, ${unreadCount} unread` : 'Notifications'
+                }
+              >
+                <NavIcon name="notifications" />
+                {unreadCount > 0 ? (
+                  <span className="absolute right-1.5 top-1.5 inline-flex min-w-4 items-center justify-center rounded-full bg-brand-600 px-1 text-[9px] font-bold leading-4 text-white">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                ) : null}
+              </Link>
+            ) : (
+              <Link
+                href={`/login?next=${encodeURIComponent(pathname || '/')}`}
+                className="inline-flex h-11 items-center rounded-full border border-brand-200 px-3 text-xs font-semibold text-brand-700"
+              >
+                Sign in
+              </Link>
+            )}
+            {isAuthenticated ? (
+              <AreaChip area={user?.currentArea} onClick={() => setSelectorOpen(true)} />
+            ) : null}
           </div>
         </div>
         <div className="border-t border-surface-border px-4 py-2">
@@ -255,13 +282,21 @@ function AppShellInner({ children }) {
           />
 
           <div className="mb-4">
-            <AreaChip area={user?.currentArea} onClick={() => setSelectorOpen(true)} />
-            {user?.currentArea ? (
-              <p className="mt-2 truncate text-xs text-ink-muted">
-                {user.currentArea.lga}, {user.currentArea.state}
+            {isAuthenticated ? (
+              <>
+                <AreaChip area={user?.currentArea} onClick={() => setSelectorOpen(true)} />
+                {user?.currentArea ? (
+                  <p className="mt-2 truncate text-xs text-ink-muted">
+                    {user.currentArea.lga}, {user.currentArea.state}
+                  </p>
+                ) : null}
+                <LiveStatusIndicator className="mt-2" />
+              </>
+            ) : (
+              <p className="rounded-lg border border-surface-border bg-surface-muted/50 px-3 py-2 text-xs text-ink-muted">
+                Browsing publicly. Sign in to personalize Home, save places, and report.
               </p>
-            ) : null}
-            <LiveStatusIndicator className="mt-2" />
+            )}
             <GlobalSearch
               className="mt-3"
               compact
@@ -323,10 +358,23 @@ function AppShellInner({ children }) {
           </nav>
 
           <div className="mt-4 border-t border-surface-border pt-4">
-            <p className="truncate text-sm font-semibold text-ink">{user?.displayName}</p>
-            <Button variant="outline" size="sm" className="mt-3 w-full" onClick={onLogout}>
-              Log out
-            </Button>
+            {isAuthenticated ? (
+              <>
+                <p className="truncate text-sm font-semibold text-ink">{user?.displayName}</p>
+                <Button variant="outline" size="sm" className="mt-3 w-full" onClick={onLogout}>
+                  Log out
+                </Button>
+              </>
+            ) : (
+              <div className="space-y-2">
+                <Button as={Link} href={`/login?next=${encodeURIComponent(pathname || '/')}`} size="sm" className="w-full">
+                  Sign in
+                </Button>
+                <Button as={Link} href="/register" variant="outline" size="sm" className="w-full">
+                  Get started
+                </Button>
+              </div>
+            )}
           </div>
         </aside>
 
@@ -379,11 +427,13 @@ function AppShellInner({ children }) {
         </ul>
       </nav>
 
-      <LocationSelector
-        open={selectorOpen}
-        onClose={() => setSelectorOpen(false)}
-        onSelect={handleSelect}
-      />
+      {isAuthenticated ? (
+        <LocationSelector
+          open={selectorOpen}
+          onClose={() => setSelectorOpen(false)}
+          onSelect={handleSelect}
+        />
+      ) : null}
     </div>
   );
 }

@@ -1,0 +1,26 @@
+[Unit]
+Description=Update Me API
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=updateme
+Group=updateme
+WorkingDirectory=/opt/update-me/backend
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=5000
+Environment=TRUST_PROXY=true
+# Load secrets from a root-owned env file (chmod 600)
+EnvironmentFile=-/etc/update-me/api.env
+ExecStart=/usr/bin/node src/index.js
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+# Single instance — do not run multiple copies (schedulers + SSE are in-process)
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

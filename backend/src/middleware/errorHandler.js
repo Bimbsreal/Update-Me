@@ -50,6 +50,22 @@ export function errorHandler(err, req, res, _next) {
     })
   );
 
+  try {
+    import('../services/analyticsService.js')
+      .then(({ analyticsService }) =>
+        analyticsService.recordErrorGroup({
+          errorType: err?.name || 'Error',
+          message: err?.message || 'Unhandled error',
+          endpoint: (req.originalUrl || req.url || '').split('?')[0],
+          statusCode: err.status || err.statusCode || 500,
+          requestId,
+        })
+      )
+      .catch(() => {});
+  } catch {
+    /* ignore */
+  }
+
   return res.status(err.status || err.statusCode || 500).json({
     success: false,
     code: 'INTERNAL_ERROR',

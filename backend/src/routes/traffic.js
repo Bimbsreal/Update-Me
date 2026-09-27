@@ -6,7 +6,9 @@ import {
   correctTraffic,
   createTraffic,
   getTraffic,
+  getTrafficEvent,
   listTraffic,
+  listTrafficEvents,
   nearbyTraffic,
   trafficHistory,
   trafficSummary,
@@ -53,6 +55,8 @@ const router = Router();
 
 router.get('/summary', trafficSummary);
 router.get('/nearby', nearbyTraffic);
+router.get('/events', listTrafficEvents);
+router.get('/events/:id', getTrafficEvent);
 router.get('/', listTraffic);
 router.post('/', requireAuth, createLimiter, createTraffic);
 router.get('/:id', softAuth, getTraffic);

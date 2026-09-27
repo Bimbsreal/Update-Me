@@ -1,0 +1,21 @@
+[Unit]
+Description=Update Me Frontend (Next.js)
+After=network.target update-me-api.service
+
+[Service]
+Type=simple
+User=updateme
+Group=updateme
+WorkingDirectory=/opt/update-me/frontend
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+EnvironmentFile=-/etc/update-me/web.env
+ExecStart=/usr/bin/npx next start -p 3000 -H 127.0.0.1
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

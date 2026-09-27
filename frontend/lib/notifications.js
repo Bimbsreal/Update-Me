@@ -4,8 +4,10 @@ export const NOTIFICATION_CATEGORIES = [
   { value: 'fuel', label: 'Fuel' },
   { value: 'transport', label: 'Transport' },
   { value: 'prices', label: 'Commodity Prices' },
+  { value: 'fx', label: 'Foreign Exchange' },
   { value: 'official', label: 'Official Updates' },
   { value: 'community', label: 'Community Questions' },
+  { value: 'system', label: 'System / Emergency' },
 ];
 
 export const SAVED_PLACE_KINDS = [
@@ -32,11 +34,13 @@ export function notificationHref(item) {
     case 'road_alerts':
       return `/alerts/${id}`;
     case 'fuel':
-      return `/fuel/${id}`;
+      return `/fuel/stations/${id}`;
     case 'transport':
-      return `/transport/${id}`;
+      return `/transport/routes/${id}`;
     case 'prices':
-      return `/prices/${id}`;
+      return `/prices`;
+    case 'fx':
+      return `/fx`;
     case 'official':
       return `/official-updates/${id}`;
     case 'community':
@@ -47,7 +51,18 @@ export function notificationHref(item) {
 }
 
 export function priorityClass(priority) {
-  if (priority === 'urgent') return 'text-status-urgent';
+  if (priority === 'critical' || priority === 'urgent') return 'text-status-urgent';
   if (priority === 'important') return 'text-brand-700';
   return 'text-ink-muted';
+}
+
+export function priorityLabel(priority) {
+  const map = {
+    low: 'Low',
+    normal: 'Normal',
+    important: 'High',
+    urgent: 'High',
+    critical: 'Critical',
+  };
+  return map[priority] || priority || 'Normal';
 }

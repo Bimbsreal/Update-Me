@@ -6,16 +6,18 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/components/auth/AuthProvider';
 import { LocationSelector } from '@/components/location/LocationSelector';
+import { useLocationSource } from '@/components/location/LocationSourceProvider';
 import { ExploreFilters } from '@/components/explore/ExploreFilters';
 import { ExploreResultCard } from '@/components/explore/ExploreResultCard';
 import { ExploreSearch } from '@/components/explore/ExploreSearch';
 import { SearchGroupSection } from '@/components/search/SearchResultCard';
 import { LiveStatusIndicator, useRealtime } from '@/components/realtime/RealtimeProvider';
 import { Button } from '@/components/ui/Button';
-import { ApiError, exploreApi, geoApi, locationsApi, searchApi } from '@/lib/api';
+import { ApiError, exploreApi, locationsApi, searchApi } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { emptyMessage, reportHref } from '@/lib/explore';
 import { REALTIME_EVENTS } from '@/lib/realtime';
+import { GEO_STATUS, messageForStatus } from '@/lib/geolocation';
 const ExploreMap = dynamic(
   () => import('@/components/explore/ExploreMap').then((m) => m.ExploreMap),
   {
@@ -42,7 +44,8 @@ function useIsDesktop() {
 
 function ExplorePageInner() {
   const router = useRouter();
-  const { user, setLocation } = useAuth();
+  const { user, setLocation, isAuthenticated } = useAuth();
+  const { acquireAndResolve, setFromSelection, modeTitle, context } = useLocationSource();
   const { explorePending, clearExplorePending, setExploreLocationId, subscribe, status: liveStatus } =
     useRealtime();
   const searchParams = useSearchParams();
@@ -209,50 +212,62 @@ function ExplorePageInner() {
   );
 
   async function handleNearMe() {
-    if (!navigator.geolocation) {
-      setNearMeNote('Location is not available on this device. Choose an area instead.');
+    setNearMeBusy(true);
+    setNearMeNote(messageForStatus(GEO_STATUS.REQUESTING));
+    const result = await acquireAndResolve({
+      enableHighAccuracy: false,
+      timeout: 12000,
+      maximumAge: 120000,
+    });
+
+    if (!result.ok) {
+      setNearMeBusy(false);
+      setNearMeNote(
+        result.message ||
+          'Location unavailable. Choose an area manually — device location is optional.'
+      );
       return;
     }
-    setNearMeBusy(true);
-    setNearMeNote('');
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        try {
-          const resolved = await geoApi.resolve(pos.coords.latitude, pos.coords.longitude);
-          const area = resolved.area;
-          if (area?.id) {
-            await setLocation({ areaId: area.id });
-            const search = await locationsApi.search(area.name, { limit: 5 });
-            const hit =
-              (search.results || []).find((r) => r.type === 'area' && r.name === area.name) ||
-              search.results?.[0];
-            if (hit?.id) {
-              setLocationId(hit.id);
-              setUseBbox(false);
-              if (hit.coordinates) {
-                setCenter({
-                  lat: hit.coordinates.lat,
-                  lng: hit.coordinates.lng,
-                  location: { id: hit.id, name: hit.name, coordinates: hit.coordinates },
-                });
-              }
-            }
-            setNearMeNote(`Showing updates around ${area.name}. Exact location is not shared.`);
-          } else {
-            setNearMeNote('Could not match your position to a known area. Select an area manually.');
-          }
-        } catch {
-          setNearMeNote('Could not resolve your area. Select a location manually.');
-        } finally {
-          setNearMeBusy(false);
+
+    try {
+      const selection = result.selection;
+      if (isAuthenticated && (selection.areaId || selection.locationId)) {
+        await setLocation({
+          areaId: selection.areaId,
+          locationId: selection.locationId,
+          privateLat: selection.privateLat,
+          privateLng: selection.privateLng,
+          accuracy: selection.accuracy,
+        });
+      } else {
+        setFromSelection(selection);
+      }
+
+      if (selection.locationId) {
+        setLocationId(selection.locationId);
+        setUseBbox(false);
+        if (selection.placeCoordinates) {
+          setCenter({
+            lat: selection.placeCoordinates.lat,
+            lng: selection.placeCoordinates.lng,
+            location: {
+              id: selection.locationId,
+              name: selection.public?.name || selection.label,
+              coordinates: selection.placeCoordinates,
+            },
+          });
         }
-      },
-      () => {
-        setNearMeBusy(false);
-        setNearMeNote('Location permission denied. Select an area manually.');
-      },
-      { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 }
-    );
+      }
+
+      const placeName = selection.public?.name || selection.label || 'your area';
+      setNearMeNote(
+        `Near Me · showing updates around ${placeName}. Exact location is not shared.`
+      );
+    } catch {
+      setNearMeNote('Could not apply your area. Select a location manually.');
+    } finally {
+      setNearMeBusy(false);
+    }
   }
 
   const showMap = isDesktop || view === 'map';
@@ -274,17 +289,22 @@ function ExplorePageInner() {
           <Button variant="secondary" onClick={() => setSelectorOpen(true)}>
             Change area
           </Button>
-          <Button variant="secondary" disabled={nearMeBusy} onClick={handleNearMe}>
-            {nearMeBusy ? 'Locating…' : 'Near Me'}
+          <Button
+            variant="secondary"
+            disabled={nearMeBusy}
+            onClick={handleNearMe}
+            aria-label="Near Me — use my current location"
+          >
+            {nearMeBusy ? 'Getting your location…' : 'Near Me'}
           </Button>
         </div>
       </div>
 
-      {center?.location?.name || user?.currentArea?.name ? (
+      {center?.location?.name || user?.currentArea?.name || context.label ? (
         <p className="text-sm text-ink-muted">
-          Exploring{' '}
+          {modeTitle === 'Near You' ? 'Near You' : 'Exploring'}{' '}
           <span className="font-semibold text-ink">
-            {center?.location?.name || user?.currentArea?.name}
+            {center?.location?.name || user?.currentArea?.name || context.label}
           </span>
           {user?.currentArea?.lga ? ` · ${user.currentArea.lga}` : ''}
           {user?.currentArea?.state ? ` · ${user.currentArea.state}` : ''}

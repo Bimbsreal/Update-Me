@@ -1,10 +1,11 @@
 import { getPool } from '../db/pool.js';
-import { categoryLabel } from '../config/official.js';
+import { categoryLabel, priorityLabel, updateTypeLabel } from '../config/official.js';
 
 function mapSource(row) {
   if (!row) return null;
   const mapped = {
     id: row.id,
+    organizationId: row.organization_id || null,
     organizationName: row.organization_name,
     shortName: row.short_name,
     agencyType: row.agency_type,
@@ -29,12 +30,50 @@ function mapSource(row) {
     verifiedAt: row.verified_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    credentialsConfigured: Boolean(
+      row.config?.apiKeyConfigured ||
+        row.config?.hasCredentials ||
+        row.config?.webhookSecretConfigured
+    ),
   };
+  // Never expose raw secrets in mapped config for admin UI consumers that clone this
+  if (mapped.config && typeof mapped.config === 'object') {
+    const safe = { ...mapped.config };
+    delete safe.apiKey;
+    delete safe.token;
+    delete safe.secret;
+    delete safe.password;
+    delete safe.webhookSecret;
+    if (safe.apiKey || mapped.config.apiKey) safe.apiKeyConfigured = true;
+    if (mapped.config.webhookSecret) safe.webhookSecretConfigured = true;
+    mapped.config = safe;
+  }
   return mapped;
+}
+
+function freshnessFlags(row) {
+  const now = Date.now();
+  const expiresAt = row.expires_at ? new Date(row.expires_at).getTime() : null;
+  const isExpired =
+    row.status === 'archived' ||
+    row.processing_status === 'expired' ||
+    (expiresAt != null && expiresAt <= now);
+  return {
+    isExpired,
+    isActive: row.status === 'published' && !isExpired,
+    freshnessLabel: isExpired
+      ? 'Expired'
+      : row.updated_at &&
+          row.published_at &&
+          new Date(row.updated_at).getTime() - new Date(row.published_at).getTime() > 60_000
+        ? 'Updated'
+        : 'Published',
+  };
 }
 
 function mapUpdate(row) {
   if (!row) return null;
+  const freshness = freshnessFlags(row);
   return {
     id: row.id,
     sourceId: row.source_id,
@@ -43,9 +82,13 @@ function mapUpdate(row) {
     title: row.title,
     summary: row.summary,
     body: row.body,
+    originalTitle: row.original_title || row.title,
+    originalBody: row.original_body || null,
     originalUrl: row.original_url,
     category: row.category,
     categoryLabel: categoryLabel(row.category),
+    updateType: row.update_type || 'public_information',
+    updateTypeLabel: updateTypeLabel(row.update_type || 'public_information'),
     jurisdictionLevel: row.jurisdiction_level,
     stateId: row.state_id,
     stateName: row.state_name || null,
@@ -53,11 +96,28 @@ function mapUpdate(row) {
     locationName: row.location_name || null,
     locationType: row.location_type || null,
     status: row.status,
+    processingStatus: row.processing_status || null,
     imageUrl: row.image_url,
     publishedAt: row.published_at,
+    effectiveAt: row.effective_at || null,
+    expiresAt: row.expires_at || null,
+    priority: row.priority || 'normal',
+    priorityLabel: priorityLabel(row.priority || 'normal'),
+    scopeAssessment: row.scope_assessment || 'in_scope',
+    relatedTrafficEventId: row.related_traffic_event_id || null,
+    revisesUpdateId: row.revises_update_id || null,
     retrievedAt: row.retrieved_at,
+    receivedAt: row.received_at || row.retrieved_at,
+    entryOrigin: row.entry_origin || 'ingested',
+    titleNormalized: row.title_normalized || null,
+    reviewedAt: row.reviewed_at || null,
+    reviewNotes: row.review_notes || null,
+    contentHash: row.content_hash || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    isExpired: freshness.isExpired,
+    isActive: freshness.isActive,
+    freshnessLabel: freshness.freshnessLabel,
     source: {
       id: row.source_id,
       organizationName: row.organization_name,
@@ -65,11 +125,16 @@ function mapUpdate(row) {
       agencyType: row.agency_type,
       officialWebsite: row.official_website,
       verificationStatus: row.source_verification_status,
+      healthStatus: row.source_health_status || null,
     },
     badge: 'OFFICIAL',
     attribution: row.short_name
       ? `Official — ${row.short_name}`
       : `Official — ${row.organization_name}`,
+    entryAttribution:
+      row.entry_origin === 'admin_manual'
+        ? 'Admin-entered official-source information'
+        : null,
   };
 }
 
@@ -85,6 +150,7 @@ const UPDATE_SELECT = `
   s.agency_type,
   s.official_website,
   s.verification_status AS source_verification_status,
+  s.health_status AS source_health_status,
   st.name AS state_name,
   loc.name AS location_name,
   loc.type AS location_type
@@ -241,9 +307,17 @@ export const officialRepository = {
 
   async upsertUpdate(update) {
     const pool = getPool();
+    const titleNormalized =
+      update.titleNormalized ||
+      String(update.title || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .slice(0, 300);
+    const entryOrigin = update.entryOrigin || 'ingested';
     const result = await pool.query(
       `WITH prior AS (
-         SELECT content_hash
+         SELECT content_hash, status
          FROM official_updates
          WHERE source_id = $1 AND dedupe_key = $3
        ),
@@ -251,33 +325,58 @@ export const officialRepository = {
          INSERT INTO official_updates (
            source_id, external_id, dedupe_key, title, summary, body, original_url,
            category, jurisdiction_level, state_id, location_id, status, image_url,
-           published_at, retrieved_at, source_metadata, content_hash
+           published_at, retrieved_at, received_at, source_metadata, content_hash,
+           entry_origin, title_normalized, priority, effective_at, expires_at, scope_assessment,
+           original_title, original_body, update_type, processing_status
          ) VALUES (
-           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),$15::jsonb,$16
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),NOW(),$15::jsonb,$16,
+           $17,$18,
+           COALESCE($19::official_update_priority, 'normal'::official_update_priority),
+           $20,$21,
+           COALESCE($22::official_scope_assessment, 'in_scope'::official_scope_assessment),
+           $4,$6,
+           COALESCE($23::official_update_type, 'public_information'::official_update_type),
+           $24::text
          )
          ON CONFLICT (source_id, dedupe_key)
          DO UPDATE SET
            external_id = COALESCE(EXCLUDED.external_id, official_updates.external_id),
            title = EXCLUDED.title,
+           title_normalized = EXCLUDED.title_normalized,
            summary = EXCLUDED.summary,
            body = COALESCE(EXCLUDED.body, official_updates.body),
+           original_title = COALESCE(official_updates.original_title, EXCLUDED.original_title),
+           original_body = COALESCE(official_updates.original_body, EXCLUDED.original_body),
            original_url = COALESCE(EXCLUDED.original_url, official_updates.original_url),
            category = EXCLUDED.category,
+           update_type = COALESCE(EXCLUDED.update_type, official_updates.update_type),
            jurisdiction_level = EXCLUDED.jurisdiction_level,
            state_id = COALESCE(EXCLUDED.state_id, official_updates.state_id),
            location_id = COALESCE(EXCLUDED.location_id, official_updates.location_id),
-           status = EXCLUDED.status,
+           status = CASE
+             WHEN official_updates.status IN ('archived', 'withdrawn', 'rejected')
+               THEN official_updates.status
+             WHEN official_updates.status = 'published' AND EXCLUDED.status = 'pending_review'
+               THEN 'published'
+             ELSE EXCLUDED.status
+           END,
            image_url = COALESCE(EXCLUDED.image_url, official_updates.image_url),
            published_at = COALESCE(EXCLUDED.published_at, official_updates.published_at),
+           effective_at = COALESCE(EXCLUDED.effective_at, official_updates.effective_at),
+           expires_at = COALESCE(EXCLUDED.expires_at, official_updates.expires_at),
+           priority = COALESCE(EXCLUDED.priority, official_updates.priority),
+           scope_assessment = COALESCE(EXCLUDED.scope_assessment, official_updates.scope_assessment),
            retrieved_at = NOW(),
+           received_at = COALESCE(official_updates.received_at, NOW()),
            source_metadata = EXCLUDED.source_metadata,
            content_hash = EXCLUDED.content_hash,
            updated_at = NOW()
-         RETURNING id, (xmax = 0) AS inserted
+         RETURNING id, (xmax = 0) AS inserted, status
        )
        SELECT
          u.id,
          u.inserted,
+         u.status,
          CASE
            WHEN u.inserted THEN TRUE
            WHEN (SELECT content_hash FROM prior) IS DISTINCT FROM $16 THEN TRUE
@@ -301,6 +400,14 @@ export const officialRepository = {
         update.publishedAt,
         JSON.stringify(update.sourceMetadata || {}),
         update.contentHash || null,
+        entryOrigin,
+        titleNormalized,
+        update.priority || 'normal',
+        update.effectiveAt || null,
+        update.expiresAt || null,
+        update.scopeAssessment || 'in_scope',
+        update.updateType || 'public_information',
+        update.status === 'published' ? 'published' : 'ingested',
       ]
     );
     const row = result.rows[0];
@@ -308,7 +415,60 @@ export const officialRepository = {
       id: row.id,
       inserted: row.inserted === true,
       changed: row.changed === true,
+      status: row.status,
     };
+  },
+
+  async listUpdateAreas(updateId) {
+    const result = await getPool().query(
+      `SELECT a.id, a.update_id, a.location_id, a.state_id, a.role,
+              loc.name AS location_name, loc.type AS location_type,
+              st.name AS state_name
+       FROM official_update_areas a
+       LEFT JOIN locations loc ON loc.id = a.location_id
+       LEFT JOIN states st ON st.id = a.state_id
+       WHERE a.update_id = $1
+       ORDER BY CASE a.role WHEN 'primary' THEN 0 ELSE 1 END, a.created_at`,
+      [updateId]
+    );
+    return result.rows.map((r) => ({
+      id: r.id,
+      locationId: r.location_id,
+      locationName: r.location_name,
+      locationType: r.location_type,
+      stateId: r.state_id,
+      stateName: r.state_name,
+      role: r.role,
+    }));
+  },
+
+  async replaceUpdateAreas(
+    updateId,
+    { locationIds = [], stateIds = [], primaryLocationId = null, primaryStateId = null } = {}
+  ) {
+    const pool = getPool();
+    await pool.query(`DELETE FROM official_update_areas WHERE update_id = $1`, [updateId]);
+    const locs = [...new Set((locationIds || []).filter(Boolean))];
+    const states = [...new Set((stateIds || []).filter(Boolean))];
+    if (primaryLocationId && !locs.includes(primaryLocationId)) locs.unshift(primaryLocationId);
+    if (primaryStateId && !states.includes(primaryStateId) && !primaryLocationId) {
+      states.unshift(primaryStateId);
+    }
+    for (const locId of locs) {
+      await pool.query(
+        `INSERT INTO official_update_areas (update_id, location_id, role)
+         VALUES ($1,$2,$3)`,
+        [updateId, locId, locId === primaryLocationId ? 'primary' : 'affected']
+      );
+    }
+    for (const stId of states) {
+      await pool.query(
+        `INSERT INTO official_update_areas (update_id, state_id, role)
+         VALUES ($1,$2,$3)`,
+        [updateId, stId, !primaryLocationId && stId === primaryStateId ? 'primary' : 'affected']
+      );
+    }
+    return this.listUpdateAreas(updateId);
   },
 
   async getUpdateById(id) {
@@ -334,11 +494,16 @@ export const officialRepository = {
     from = null,
     to = null,
     freshnessHours = null,
+    includeExpired = false,
+    q = null,
+    priority = null,
+    updateType = null,
     page = 1,
     limit = 20,
   } = {}) {
     const pool = getPool();
     const offset = (page - 1) * limit;
+    const search = q ? `%${String(q).trim()}%` : null;
     const result = await pool.query(
       `SELECT ${UPDATE_SELECT},
               COUNT(*) OVER()::int AS total_count
@@ -359,8 +524,32 @@ export const officialRepository = {
            $8::int IS NULL
            OR COALESCE(u.published_at, u.retrieved_at) >= NOW() - ($8 || ' hours')::interval
          )
-       ORDER BY COALESCE(u.published_at, u.retrieved_at) DESC, u.retrieved_at DESC
-       LIMIT $9 OFFSET $10`,
+         AND (
+           $9::boolean IS TRUE
+           OR u.expires_at IS NULL
+           OR u.expires_at > NOW()
+         )
+         AND (
+           $10::text IS NULL
+           OR u.title ILIKE $10
+           OR u.summary ILIKE $10
+           OR s.organization_name ILIKE $10
+           OR s.short_name ILIKE $10
+           OR COALESCE(loc.name, '') ILIKE $10
+           OR COALESCE(st.name, '') ILIKE $10
+         )
+         AND ($11::official_update_priority IS NULL OR u.priority = $11)
+         AND ($12::official_update_type IS NULL OR u.update_type = $12)
+       ORDER BY
+         CASE u.priority
+           WHEN 'critical' THEN 0
+           WHEN 'urgent' THEN 1
+           WHEN 'important' THEN 2
+           ELSE 3
+         END,
+         COALESCE(u.published_at, u.retrieved_at) DESC,
+         u.retrieved_at DESC
+       LIMIT $13 OFFSET $14`,
       [
         category,
         sourceId,
@@ -370,6 +559,10 @@ export const officialRepository = {
         from,
         to,
         freshnessHours,
+        Boolean(includeExpired),
+        search,
+        priority,
+        updateType,
         limit,
         offset,
       ]
@@ -382,10 +575,22 @@ export const officialRepository = {
       limit,
       total,
       totalPages: Math.max(1, Math.ceil(total / limit)),
+      asOf: new Date().toISOString(),
+      activityWindow: {
+        includeExpired: Boolean(includeExpired),
+        note: 'Snapshot time only — cached or offline copies must not be treated as newly published.',
+      },
     };
   },
 
-  async nearbyUpdates({ lat, lng, radiusKm = 50, limit = 20, category = null }) {
+  async nearbyUpdates({
+    lat,
+    lng,
+    radiusKm = 50,
+    limit = 20,
+    category = null,
+    includeExpired = false,
+  }) {
     const pool = getPool();
     const result = await pool.query(
       `SELECT ${UPDATE_SELECT},
@@ -408,17 +613,25 @@ export const officialRepository = {
          AND loc.latitude IS NOT NULL
          AND loc.longitude IS NOT NULL
          AND ($4::official_update_category IS NULL OR u.category = $4)
+         AND (
+           $5::boolean IS TRUE
+           OR u.expires_at IS NULL
+           OR u.expires_at > NOW()
+         )
        ORDER BY distance_km ASC, COALESCE(u.published_at, u.retrieved_at) DESC
        LIMIT $3`,
-      [lat, lng, limit, category]
+      [lat, lng, limit, category, Boolean(includeExpired)]
     );
 
-    return result.rows
-      .filter((row) => Number(row.distance_km) <= radiusKm)
-      .map((row) => ({
-        ...mapUpdate(row),
-        distanceKm: Number(Number(row.distance_km).toFixed(2)),
-      }));
+    return {
+      results: result.rows
+        .filter((row) => Number(row.distance_km) <= radiusKm)
+        .map((row) => ({
+          ...mapUpdate(row),
+          distanceKm: Number(Number(row.distance_km).toFixed(2)),
+        })),
+      asOf: new Date().toISOString(),
+    };
   },
 
   async listForLocationContext({ locationId = null, stateId = null, limit = 10 } = {}) {
@@ -431,6 +644,7 @@ export const officialRepository = {
        LEFT JOIN locations loc ON loc.id = u.location_id
        WHERE u.status = 'published'
          AND s.status = 'active'
+         AND (u.expires_at IS NULL OR u.expires_at > NOW())
          AND (
            u.jurisdiction_level = 'national'
            OR ($1::uuid IS NOT NULL AND u.state_id = $1)
@@ -444,11 +658,68 @@ export const officialRepository = {
            WHEN u.jurisdiction_level = 'national' THEN 2
            ELSE 3
          END,
+         CASE u.priority
+           WHEN 'critical' THEN 0
+           WHEN 'urgent' THEN 1
+           WHEN 'important' THEN 2
+           ELSE 3
+         END,
          COALESCE(u.published_at, u.retrieved_at) DESC
        LIMIT $3`,
       [stateId, locationId, limit]
     );
-    return result.rows.map(mapUpdate);
+    return {
+      items: result.rows.map(mapUpdate),
+      asOf: new Date().toISOString(),
+    };
+  },
+
+  async getPublicSource(id, { limit = 20, includeExpired = false } = {}) {
+    const source = await this.getSource(id);
+    if (!source || source.status !== 'active') return null;
+    if (source.verificationStatus !== 'verified') return null;
+
+    const pool = getPool();
+    const updates = await pool.query(
+      `SELECT ${UPDATE_SELECT}
+       FROM official_updates u
+       JOIN official_sources s ON s.id = u.source_id
+       LEFT JOIN states st ON st.id = u.state_id
+       LEFT JOIN locations loc ON loc.id = u.location_id
+       WHERE u.source_id = $1
+         AND u.status = 'published'
+         AND (
+           $2::boolean IS TRUE
+           OR u.expires_at IS NULL
+           OR u.expires_at > NOW()
+         )
+       ORDER BY COALESCE(u.published_at, u.retrieved_at) DESC
+       LIMIT $3`,
+      [id, Boolean(includeExpired), limit]
+    );
+
+    const unavailable =
+      source.healthStatus === 'failing' ||
+      (source.consecutiveFailures || 0) >= 3;
+
+    return {
+      source: {
+        id: source.id,
+        organizationName: source.organizationName,
+        shortName: source.shortName,
+        agencyType: source.agencyType,
+        jurisdictionLevel: source.jurisdictionLevel,
+        stateName: source.stateName,
+        officialWebsite: source.officialWebsite,
+        verificationStatus: source.verificationStatus,
+        sourceUnavailable: unavailable,
+        unavailableNote: unavailable
+          ? 'Source currently unavailable — previously published updates are retained.'
+          : null,
+      },
+      updates: updates.rows.map(mapUpdate),
+      asOf: new Date().toISOString(),
+    };
   },
 
   async createSyncRun(run) {
@@ -597,7 +868,26 @@ export const officialRepository = {
         `SELECT
            (SELECT COUNT(*)::int FROM official_sources) AS sources,
            (SELECT COUNT(*)::int FROM official_sources WHERE status = 'active') AS active_sources,
-           (SELECT COUNT(*)::int FROM official_updates WHERE status = 'published') AS published_updates`
+           (SELECT COUNT(*)::int FROM official_sources
+              WHERE consecutive_failures >= 3 OR health_status = 'failing') AS failed_sources,
+           (SELECT COUNT(*)::int FROM official_updates WHERE status = 'published') AS published_updates,
+           (SELECT COUNT(*)::int FROM official_updates WHERE status = 'pending_review') AS pending_updates,
+           (SELECT COUNT(*)::int FROM official_updates
+              WHERE status = 'published'
+                AND COALESCE(published_at, retrieved_at) >= CURRENT_DATE) AS updates_today,
+           (SELECT COUNT(*)::int FROM official_updates
+              WHERE status = 'published' AND priority = 'critical') AS critical_updates,
+           (SELECT COUNT(*)::int FROM official_updates
+              WHERE status = 'published'
+                AND expires_at IS NOT NULL
+                AND expires_at > NOW()
+                AND expires_at <= NOW() + INTERVAL '48 hours') AS expiring_updates,
+           (SELECT COUNT(*)::int FROM official_updates
+              WHERE status = 'published'
+                AND expires_at IS NOT NULL
+                AND expires_at <= NOW()) AS expired_updates,
+           (SELECT COUNT(*)::int FROM official_updates
+              WHERE status = 'published' AND scope_assessment = 'needs_review') AS flagged_updates`
       ),
     ]);
 

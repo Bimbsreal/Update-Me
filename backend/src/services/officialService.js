@@ -2,8 +2,11 @@ import {
   OFFICIAL_CATEGORIES,
   OFFICIAL_INGESTION_METHODS,
   OFFICIAL_JURISDICTION_LEVELS,
+  OFFICIAL_PRIORITIES,
+  OFFICIAL_UPDATE_TYPES,
 } from '../config/official.js';
 import { AppError } from '../middleware/errorHandler.js';
+import { assertSafeIngestionUrl } from '../ingestion/urlPolicy.js';
 import { assertSafeHttpUrl } from '../middleware/officialAdmin.js';
 import { officialRepository } from '../repositories/officialRepository.js';
 import { getPool } from '../db/pool.js';
@@ -11,7 +14,7 @@ import { getPool } from '../db/pool.js';
 function publicUpdate(update) {
   if (!update) return null;
   // Strip internal metadata noise for public responses
-  const { dedupeKey, ...rest } = update;
+  const { dedupeKey, contentHash, titleNormalized, reviewNotes, ...rest } = update;
   return {
     ...rest,
     informationType: 'official',
@@ -24,6 +27,8 @@ export const officialService = {
   getTaxonomy() {
     return {
       categories: OFFICIAL_CATEGORIES,
+      updateTypes: OFFICIAL_UPDATE_TYPES,
+      priorities: OFFICIAL_PRIORITIES,
       jurisdictionLevels: OFFICIAL_JURISDICTION_LEVELS,
       ingestionMethods: OFFICIAL_INGESTION_METHODS,
     };
@@ -42,32 +47,42 @@ export const officialService = {
     if (!update || update.status !== 'published') {
       throw new AppError('Official update not found.', 404, 'NOT_FOUND');
     }
-    return publicUpdate(update);
+    return {
+      update: publicUpdate(update),
+      asOf: new Date().toISOString(),
+      note: 'Snapshot time only — cached or offline copies must not be treated as newly published.',
+    };
   },
 
   async nearby(query) {
-    const items = await officialRepository.nearbyUpdates(query);
-    return items.map(publicUpdate);
+    const data = await officialRepository.nearbyUpdates(query);
+    return {
+      ...data,
+      results: (data.results || []).map(publicUpdate),
+      count: (data.results || []).length,
+    };
   },
 
   async forUserLocation({ locationId = null, stateId = null, limit = 8 } = {}) {
-    // Resolve state from location when needed
     let resolvedStateId = stateId;
     if (!resolvedStateId && locationId) {
       const pool = getPool();
-      const result = await pool.query(
-        `SELECT state_id FROM locations WHERE id = $1`,
-        [locationId]
-      );
+      const result = await pool.query(`SELECT state_id FROM locations WHERE id = $1`, [
+        locationId,
+      ]);
       resolvedStateId = result.rows[0]?.state_id || null;
     }
 
-    const items = await officialRepository.listForLocationContext({
+    const data = await officialRepository.listForLocationContext({
       locationId,
       stateId: resolvedStateId,
       limit,
     });
-    return items.map(publicUpdate);
+    return {
+      items: (data.items || []).map(publicUpdate),
+      count: (data.items || []).length,
+      asOf: data.asOf || new Date().toISOString(),
+    };
   },
 
   async listPublicSources() {
@@ -75,15 +90,30 @@ export const officialService = {
       status: 'active',
       includeInactive: false,
     });
-    return sources.map((s) => ({
-      id: s.id,
-      organizationName: s.organizationName,
-      shortName: s.shortName,
-      agencyType: s.agencyType,
-      jurisdictionLevel: s.jurisdictionLevel,
-      officialWebsite: s.officialWebsite,
-      verificationStatus: s.verificationStatus,
-    }));
+    return sources
+      .filter((s) => s.verificationStatus === 'verified')
+      .map((s) => ({
+        id: s.id,
+        organizationName: s.organizationName,
+        shortName: s.shortName,
+        agencyType: s.agencyType,
+        jurisdictionLevel: s.jurisdictionLevel,
+        officialWebsite: s.officialWebsite,
+        verificationStatus: s.verificationStatus,
+        sourceUnavailable:
+          s.healthStatus === 'failing' || (s.consecutiveFailures || 0) >= 3,
+      }));
+  },
+
+  async getPublicSource(id, query = {}) {
+    const data = await officialRepository.getPublicSource(id, query);
+    if (!data) {
+      throw new AppError('Official source not found.', 404, 'NOT_FOUND');
+    }
+    return {
+      ...data,
+      updates: data.updates.map(publicUpdate),
+    };
   },
 
   async adminStatus() {
@@ -100,10 +130,12 @@ export const officialService = {
       assertSafeHttpUrl(input.officialWebsite, 'officialWebsite');
     }
     if (input.feedUrl && !String(input.feedUrl).startsWith('fixture:')) {
-      assertSafeHttpUrl(input.feedUrl, 'feedUrl');
+      assertSafeIngestionUrl(input.feedUrl, 'feedUrl', {
+        requireAllowlist: true,
+        allowLocalhost: process.env.INGESTION_ALLOW_LOCALHOST === 'true',
+      });
     }
 
-    // Only verified+active sources sync; drafts allowed for staging
     return officialRepository.createSource({
       ...input,
       verifiedBy: admin.userId || null,
@@ -119,7 +151,10 @@ export const officialService = {
       assertSafeHttpUrl(patch.officialWebsite, 'officialWebsite');
     }
     if (patch.feedUrl && !String(patch.feedUrl).startsWith('fixture:')) {
-      assertSafeHttpUrl(patch.feedUrl, 'feedUrl');
+      assertSafeIngestionUrl(patch.feedUrl, 'feedUrl', {
+        requireAllowlist: true,
+        allowLocalhost: process.env.INGESTION_ALLOW_LOCALHOST === 'true',
+      });
     }
     return officialRepository.updateSource(id, {
       ...patch,

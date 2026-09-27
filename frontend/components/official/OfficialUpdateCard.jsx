@@ -2,7 +2,13 @@
 
 import Link from 'next/link';
 import { cn } from '@/lib/cn';
-import { formatOfficialTime, jurisdictionLabel } from '@/lib/official';
+import {
+  affectedLocationLabel,
+  formatOfficialTime,
+  freshnessParts,
+  jurisdictionLabel,
+  priorityLabel,
+} from '@/lib/official';
 
 export function OfficialBadge({ className }) {
   return (
@@ -27,20 +33,53 @@ export function OfficialUpdateCard({ update, compact = false, className }) {
     'Official source';
   const published = formatOfficialTime(update.publishedAt || update.retrievedAt);
   const href = `/official-updates/${update.id}`;
+  const sourceHref = update.source?.id ? `/official-sources/${update.source.id}` : null;
+  const location = affectedLocationLabel(update);
+  const importance = priorityLabel(update.priority, update.priorityLabel);
+  const freshness = freshnessParts(update);
+  const expired = Boolean(update.isExpired);
 
   return (
     <article
       className={cn(
-        'rounded-card border border-status-official/20 bg-white shadow-card',
+        'rounded-card border bg-white shadow-card',
+        expired ? 'border-amber-300/60 opacity-90' : 'border-status-official/20',
         compact ? 'p-4' : 'p-5 sm:p-6',
         className
       )}
     >
       <div className="flex flex-wrap items-center gap-2">
         <OfficialBadge />
-        <span className="text-xs font-semibold text-status-official break-words">
-          {agency}
-        </span>
+        {sourceHref ? (
+          <Link
+            href={sourceHref}
+            className="text-xs font-semibold text-status-official break-words hover:underline"
+          >
+            {agency}
+          </Link>
+        ) : (
+          <span className="text-xs font-semibold text-status-official break-words">{agency}</span>
+        )}
+        {importance && update.priority && update.priority !== 'normal' ? (
+          <span
+            className={cn(
+              'rounded-pill px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide',
+              update.priority === 'critical'
+                ? 'bg-red-100 text-red-900'
+                : update.priority === 'urgent'
+                  ? 'bg-orange-100 text-orange-900'
+                  : 'bg-amber-100 text-amber-900'
+            )}
+            title={importance}
+          >
+            {importance}
+          </span>
+        ) : null}
+        {expired ? (
+          <span className="rounded-pill bg-surface-muted px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ink-muted">
+            Expired
+          </span>
+        ) : null}
       </div>
 
       <h3 className={cn('mt-3 font-bold text-ink break-words', compact ? 'text-base' : 'text-lg')}>
@@ -62,12 +101,12 @@ export function OfficialUpdateCard({ update, compact = false, className }) {
 
       <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-soft">
         {update.categoryLabel ? <span>{update.categoryLabel}</span> : null}
+        {update.updateTypeLabel ? <span>{update.updateTypeLabel}</span> : null}
         {update.jurisdictionLevel ? (
           <span>{jurisdictionLabel(update.jurisdictionLevel)}</span>
         ) : null}
-        {update.locationName ? <span className="break-words">{update.locationName}</span> : null}
-        {update.stateName ? <span>{update.stateName}</span> : null}
-        {published ? <span>Published {published}</span> : null}
+        {location ? <span className="break-words">Affects {location}</span> : null}
+        {published ? <span>{freshness[0]?.label || 'Published'} {published}</span> : null}
       </div>
 
       <div className="mt-4 flex flex-wrap gap-3">
@@ -75,7 +114,7 @@ export function OfficialUpdateCard({ update, compact = false, className }) {
           href={href}
           className="inline-flex min-h-11 items-center text-sm font-semibold text-status-official hover:underline"
         >
-          View details
+          Read update
         </Link>
         {update.originalUrl ? (
           <a
@@ -84,7 +123,7 @@ export function OfficialUpdateCard({ update, compact = false, className }) {
             rel="noopener noreferrer"
             className="inline-flex min-h-11 items-center text-sm font-semibold text-ink-muted hover:text-ink hover:underline"
           >
-            View official source
+            View original source
           </a>
         ) : null}
       </div>

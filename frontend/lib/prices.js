@@ -1,4 +1,5 @@
 export const PRICE_HISTORY_PERIODS = [
+  { id: '24h', label: '24H' },
   { id: '7d', label: '7D' },
   { id: '30d', label: '30D' },
   { id: '90d', label: '90D' },
@@ -34,4 +35,10 @@ export function formatPriceAge(value) {
   if (days === 1) return 'Updated today';
   if (days < 7) return `${days} days old`;
   return `${days}d ago`;
+}
+
+/** Display-only pack normalization hint (never replaces the observation). */
+export function formatNormalizedHint(normalized) {
+  if (!normalized?.label) return null;
+  return normalized.label;
 }

@@ -279,12 +279,17 @@ export function ReportComposer({ onSubmitted }) {
               {locationLabel || 'No location selected'}
             </p>
             <p className="mt-1 text-xs text-ink-muted">
-              Uses your selected area by default. Exact private coordinates are never published.
+              Use your current location or choose an area manually. Exact private coordinates are
+              never published.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" onClick={() => setSelectorOpen(true)}>
-              Change location
+            <Button
+              variant="secondary"
+              onClick={() => setSelectorOpen(true)}
+              aria-label="Choose report location — current or manual"
+            >
+              Use current location or choose manually
             </Button>
             <Button variant="outline" onClick={() => setStep('category')}>
               Back

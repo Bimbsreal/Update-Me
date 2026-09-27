@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { CorridorSummaryCard, DirectionResultCard } from '@/components/directions/DirectionResultCard';
 import { DirectionsComposer } from '@/components/directions/DirectionsComposer';
@@ -9,12 +9,22 @@ import { MapFoundation } from '@/components/location/MapFoundation';
 import { Button } from '@/components/ui/Button';
 import { FormError } from '@/components/ui/Input';
 import { useAuth } from '@/components/auth/AuthProvider';
+import { useLocationSource } from '@/components/location/LocationSourceProvider';
+import { resolveDeviceToPublicLocation } from '@/lib/resolveDeviceLocation';
 import { ApiError, directionsApi } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { DIRECTION_MODES } from '@/lib/directions';
+import {
+  GEO_STATUS,
+  getCurrentPosition,
+  messageForStatus,
+  watchPosition,
+} from '@/lib/geolocation';
+import { LOCATION_SOURCES } from '@/lib/locationSource';
 
 export default function DirectionsPage() {
   const { user } = useAuth();
+  const { setFromSelection } = useLocationSource();
   const [origin, setOrigin] = useState(
     user?.currentArea?.locationId
       ? {
@@ -31,6 +41,16 @@ export default function DirectionsPage() {
   const [error, setError] = useState('');
   const [composerOpen, setComposerOpen] = useState(false);
   const [geoNote, setGeoNote] = useState('');
+  const [geoStatus, setGeoStatus] = useState(GEO_STATUS.IDLE);
+  const [liveTracking, setLiveTracking] = useState(false);
+  const watchRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      watchRef.current?.clear?.();
+      watchRef.current = null;
+    };
+  }, []);
 
   const mapCoords = useMemo(() => {
     return data?.origin?.coordinates || origin?.coordinates || null;
@@ -59,28 +79,98 @@ export default function DirectionsPage() {
     }
   }
 
-  function useCurrentLocation() {
-    if (!navigator?.geolocation) {
-      setGeoNote('Location is not available in this browser.');
+  async function applyDeviceOrigin(position) {
+    const resolved = await resolveDeviceToPublicLocation(position, { radiusKm: 8, limit: 5 });
+    if (!resolved.resolved) {
+      setGeoStatus(GEO_STATUS.UNAVAILABLE);
+      setGeoNote(
+        'We found your position but could not match it to a known area. Search manually.'
+      );
+      return false;
+    }
+
+    // Never put private GPS on the map — only the resolved place centroid.
+    setOrigin({
+      locationId: resolved.locationId,
+      label: resolved.label,
+      name: resolved.public?.name || resolved.label,
+      type: resolved.type,
+      coordinates: resolved.placeCoordinates || null,
+      source: LOCATION_SOURCES.DEVICE,
+    });
+    setFromSelection({
+      source: LOCATION_SOURCES.DEVICE,
+      locationId: resolved.locationId,
+      areaId: resolved.areaId,
+      label: resolved.label,
+      privateCoords: resolved.privateCoords,
+      public: resolved.public,
+      lowAccuracy: resolved.lowAccuracy,
+    });
+    setGeoStatus(GEO_STATUS.GRANTED);
+    setGeoNote(
+      resolved.lowAccuracy
+        ? 'Using the nearest known area to your current location (approximate accuracy).'
+        : 'From: my current location (nearest known area). Exact GPS is not shown on the map.'
+    );
+    return true;
+  }
+
+  async function useCurrentLocation() {
+    setGeoStatus(GEO_STATUS.REQUESTING);
+    setGeoNote(messageForStatus(GEO_STATUS.REQUESTING));
+    const result = await getCurrentPosition({
+      enableHighAccuracy: false,
+      timeout: 12000,
+      maximumAge: 60000,
+    });
+    if (!result.ok) {
+      setGeoStatus(result.status);
+      setGeoNote(result.message);
       return;
     }
-    setGeoNote('Resolving your location…');
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
+    try {
+      await applyDeviceOrigin(result.position);
+    } catch {
+      setGeoStatus(GEO_STATUS.ERROR);
+      setGeoNote('Could not resolve your location. Please search manually.');
+    }
+  }
+
+  function stopLiveTracking() {
+    watchRef.current?.clear?.();
+    watchRef.current = null;
+    setLiveTracking(false);
+    setGeoNote((prev) =>
+      prev?.includes('Updating') ? 'Stopped updating From as you move.' : prev
+    );
+  }
+
+  function startLiveTracking() {
+    if (liveTracking) {
+      stopLiveTracking();
+      return;
+    }
+    setGeoNote(
+      'Live tracking updates your From place as you move. Tracking stops when you leave this page or turn it off.'
+    );
+    setLiveTracking(true);
+    watchRef.current?.clear?.();
+    watchRef.current = watchPosition(
+      async (update) => {
+        if (!update.ok) return;
+        setGeoNote('Updating From from your current location…');
         try {
-          const nearby = await locationsApiNearby(pos.coords.latitude, pos.coords.longitude);
-          if (nearby) {
-            setOrigin(nearby);
-            setGeoNote('Using the nearest known area to your current location.');
-          } else {
-            setGeoNote('Could not match your location to a known area. Please search manually.');
-          }
+          await applyDeviceOrigin(update.position);
         } catch {
-          setGeoNote('Could not resolve your location. Please search manually.');
+          /* keep last known origin */
         }
       },
-      () => setGeoNote('Location permission denied. Please search for your area instead.'),
-      { enableHighAccuracy: false, timeout: 10000 }
+      (err) => {
+        setGeoStatus(err.status || GEO_STATUS.ERROR);
+        setGeoNote(err.message || messageForStatus(GEO_STATUS.ERROR));
+        stopLiveTracking();
+      }
     );
   }
 
@@ -105,7 +195,10 @@ export default function DirectionsPage() {
             id="directions-from"
             label="From"
             value={origin}
-            onChange={setOrigin}
+            onChange={(value) => {
+              setOrigin(value);
+              if (liveTracking) stopLiveTracking();
+            }}
             placeholder="Search area, road, landmark…"
           />
           <PlaceSearchField
@@ -138,14 +231,39 @@ export default function DirectionsPage() {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="secondary" onClick={useCurrentLocation}>
-              Use my current location
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={useCurrentLocation}
+              disabled={geoStatus === GEO_STATUS.REQUESTING}
+              aria-label="Use my current location as From"
+            >
+              {geoStatus === GEO_STATUS.REQUESTING
+                ? 'Getting your location…'
+                : 'From: My current location'}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={startLiveTracking}
+              aria-pressed={liveTracking}
+              aria-label={
+                liveTracking
+                  ? 'Stop updating From as I move'
+                  : 'Update From as I move (optional)'
+              }
+            >
+              {liveTracking ? 'Stop live From updates' : 'Update From as I move'}
             </Button>
             <Button type="button" onClick={findDirections} disabled={loading}>
               {loading ? 'Finding…' : 'Find directions'}
             </Button>
           </div>
-          {geoNote ? <p className="text-xs text-ink-soft">{geoNote}</p> : null}
+          {geoNote ? (
+            <p className="text-xs text-ink-soft" aria-live="polite">
+              {geoNote}
+            </p>
+          ) : null}
           <FormError message={error} />
         </div>
 
@@ -224,18 +342,4 @@ export default function DirectionsPage() {
       ) : null}
     </div>
   );
-}
-
-async function locationsApiNearby(lat, lng) {
-  const { locationsApi } = await import('@/lib/api');
-  const data = await locationsApi.nearby(lat, lng, { radiusKm: 8, limit: 5 });
-  const item = (data.results || data.items || [])[0];
-  if (!item) return null;
-  return {
-    locationId: item.id,
-    label: item.subtitle ? `${item.name} · ${item.subtitle}` : item.name,
-    name: item.name,
-    type: item.type,
-    coordinates: item.coordinates || { lat, lng },
-  };
 }

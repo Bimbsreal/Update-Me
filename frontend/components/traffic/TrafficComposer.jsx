@@ -116,6 +116,10 @@ export function TrafficComposer({ onSubmitted, compactHeader = false }) {
           <p className="mt-2 text-sm text-ink-muted">
             Quick, factual information that helps people moving through this area.
           </p>
+          <p className="mt-2 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+            Please use Update Me only when safely stopped or through a passenger — do not interact
+            while driving.
+          </p>
         </div>
       ) : null}
 

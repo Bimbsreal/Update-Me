@@ -1,4 +1,4 @@
-import { assertSafeIngestionUrl, isFixtureUrl } from './urlPolicy.js';
+import { assertSafeIngestionUrl, assertResolvedHostSafe, isFixtureUrl } from './urlPolicy.js';
 import { env } from '../config/env.js';
 
 const DEFAULT_TIMEOUT_MS = env.OFFICIAL_PROVIDER_TIMEOUT_MS || 12_000;
@@ -59,6 +59,9 @@ export async function fetchIngestionText(url, {
     requireAllowlist: true,
     allowLocalhost,
   });
+
+  const parsed = new URL(url);
+  await assertResolvedHostSafe(parsed.hostname, { allowLocalhost });
 
   return withBoundedRetries(
     async () => {

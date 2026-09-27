@@ -98,6 +98,7 @@ export const pricesService = {
       recentReports: reports.items,
       history,
       officialUpdates: (official.items || []).filter((item) => item.isOfficial),
+      asOf: new Date().toISOString(),
     };
   },
 
@@ -186,6 +187,10 @@ export const pricesService = {
       placeLabel,
       priceAmount: input.priceAmount,
       priceCurrency: input.priceCurrency || 'NGN',
+      sourceReference: input.sourceReference || null,
+      pricingContext: input.pricingContext || 'retail',
+      publishedAt: input.publishedAt || null,
+      effectiveAt: input.effectiveAt || null,
     });
 
     await reportRepository.addHistory({
@@ -203,6 +208,26 @@ export const pricesService = {
     });
 
     realtimePublisher.priceUpdated(price);
+
+    try {
+      const { userAlertService } = await import('./userAlertService.js');
+      const { notificationService, safeNotify } = await import('./notificationService.js');
+      const hits = await userAlertService.evaluateCommodityPrice({
+        commodityCode: commodity.code || commodity.slug,
+        commodityLabel: commodity.name || commodity.code,
+        commodityVariant: variant.code || variant.label,
+        price: input.priceAmount,
+        locationId: input.locationId,
+        locationName: location.name,
+        observationId: price.id,
+        href: `/prices/${commodity.code || commodity.slug}/${variant.code || 'default'}`,
+      });
+      for (const hit of hits) {
+        safeNotify(notificationService.notifyCommodityThreshold(hit, { actorUserId: userId }));
+      }
+    } catch (err) {
+      console.error('[prices] notify failed', err?.message || err);
+    }
 
     return price;
   },

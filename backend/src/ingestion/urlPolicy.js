@@ -1,4 +1,5 @@
 import { AppError } from '../middleware/errorHandler.js';
+import dns from 'node:dns/promises';
 
 /** Hosts that must never be fetched by the ingestion HTTP client (SSRF). */
 const BLOCKED_HOSTNAMES = new Set([
@@ -19,7 +20,6 @@ const DEFAULT_ALLOWED_HOST_SUFFIXES = [
   'nmdpra.gov.ng',
   'cbn.gov.ng',
   'lagosstate.gov.ng',
-  'localhost', // local mock HTTP servers in tests only when explicitly enabled
 ];
 
 function isPrivateIp(hostname) {
@@ -38,10 +38,19 @@ function isPrivateIp(hostname) {
     if (a === 169 && b === 254) return true;
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+    if (a === 100 && b >= 64 && b <= 127) return true;
   }
-  // Basic IPv6 local/link-local
-  if (h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80')) return true;
+  if (
+    h === '::' ||
+    h.startsWith('fc') ||
+    h.startsWith('fd') ||
+    h.startsWith('fe80') ||
+    h.startsWith('::ffff:127.') ||
+    h.startsWith('::ffff:10.') ||
+    h.startsWith('::ffff:192.168.')
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -74,7 +83,6 @@ export function assertSafeIngestionUrl(value, fieldName = 'url', options = {}) {
 
   const host = parsed.hostname.toLowerCase();
   if (BLOCKED_HOSTNAMES.has(host) || isPrivateIp(host)) {
-    // Allow explicit local mock only when env flag set (tests)
     if (!(options.allowLocalhost && (host === 'localhost' || host === '127.0.0.1'))) {
       throw new AppError(
         `${fieldName} target is not allowed (private or blocked host)`,
@@ -95,12 +103,37 @@ export function assertSafeIngestionUrl(value, fieldName = 'url', options = {}) {
     }
   }
 
-  // Disallow credentials in URL
   if (parsed.username || parsed.password) {
     throw new AppError(`${fieldName} must not include credentials`, 400, 'VALIDATION_ERROR');
   }
 
   return parsed.toString();
+}
+
+/**
+ * Resolve hostname and reject if DNS points at a private address (rebinding mitigation).
+ */
+export async function assertResolvedHostSafe(hostname, options = {}) {
+  const host = String(hostname || '').toLowerCase();
+  if (!host || host === 'localhost' || isPrivateIp(host)) {
+    if (options.allowLocalhost && (host === 'localhost' || host === '127.0.0.1')) return;
+    throw new AppError('Resolved host is not allowed', 400, 'SSRF_BLOCKED');
+  }
+  let addresses;
+  try {
+    addresses = await dns.lookup(host, { all: true, verbatim: true });
+  } catch {
+    throw new AppError('Unable to resolve host for ingestion', 400, 'DNS_RESOLVE_FAILED');
+  }
+  for (const entry of addresses || []) {
+    if (isPrivateIp(entry.address)) {
+      throw new AppError(
+        'Resolved address is private or blocked (SSRF protection)',
+        400,
+        'SSRF_BLOCKED'
+      );
+    }
+  }
 }
 
 export function isFixtureUrl(value) {

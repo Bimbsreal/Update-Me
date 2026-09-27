@@ -22,6 +22,7 @@ function PinIcon({ className }) {
 export function HomeLocationBar({
   label,
   subtitle,
+  modeTitle,
   onChangeArea,
   className,
 }) {
@@ -37,6 +38,11 @@ export function HomeLocationBar({
           <PinIcon className="h-4 w-4" />
         </span>
         <div className="min-w-0">
+          {modeTitle ? (
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-brand-800/80">
+              {modeTitle}
+            </p>
+          ) : null}
           <p className="truncate text-sm font-bold text-brand-900">{label || 'Choose an area'}</p>
           {subtitle ? <p className="truncate text-xs text-brand-800/70">{subtitle}</p> : null}
         </div>
@@ -45,8 +51,9 @@ export function HomeLocationBar({
         type="button"
         onClick={onChangeArea}
         className="shrink-0 rounded-control border border-brand-200 bg-white px-3 py-1.5 text-xs font-semibold text-brand-800 hover:border-brand-400"
+        aria-label="Change location"
       >
-        Change area
+        Change location
       </button>
     </div>
   );

@@ -33,7 +33,7 @@ export const adminAuditRepository = {
     return result.rows[0];
   },
 
-  async list({ limit = 40, offset = 0, actorUserId, entityType, action } = {}) {
+  async list({ limit = 40, offset = 0, actorUserId, entityType, action, actionPrefix } = {}) {
     const params = [];
     const where = [];
     if (actorUserId) {
@@ -47,6 +47,10 @@ export const adminAuditRepository = {
     if (action) {
       params.push(action);
       where.push(`a.action = $${params.length}`);
+    }
+    if (actionPrefix) {
+      params.push(`${String(actionPrefix).trim()}%`);
+      where.push(`a.action LIKE $${params.length}`);
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     params.push(Math.min(Number(limit) || 40, 100));

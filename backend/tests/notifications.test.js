@@ -247,6 +247,72 @@ test('notification create, prefs, dedupe, read, isolation, expiry', async () => 
   assert.ok(alertFanout.notified >= 1);
 });
 
+test('alert engine quiet hours, cooldown escalation, templates, FX subscription', async () => {
+  const { isInQuietHours, isSeverityEscalation, alertEngine } = await import(
+    '../src/services/alertEngine.js'
+  );
+  const { renderNotificationTemplate } = await import('../src/services/notificationTemplates.js');
+  const { userAlertService } = await import('../src/services/userAlertService.js');
+
+  assert.equal(
+    isInQuietHours({
+      quietHoursEnabled: true,
+      quietStartMinute: 22 * 60,
+      quietEndMinute: 6 * 60,
+      now: new Date('2026-01-15T23:30:00Z'),
+      timezone: 'UTC',
+      priority: 'normal',
+    }),
+    true
+  );
+  assert.equal(
+    isInQuietHours({
+      quietHoursEnabled: true,
+      quietStartMinute: 22 * 60,
+      quietEndMinute: 6 * 60,
+      now: new Date('2026-01-15T23:30:00Z'),
+      timezone: 'UTC',
+      priority: 'critical',
+      criticalOverridesQuiet: true,
+    }),
+    false
+  );
+  assert.equal(isSeverityEscalation('normal', 'urgent'), true);
+  assert.equal(isSeverityEscalation('urgent', 'important'), false);
+
+  const rendered = renderNotificationTemplate('fx.rate', {
+    pair: 'USD/NGN',
+    rate: '1600',
+    threshold: '1500',
+  });
+  assert.match(rendered.title, /USD\/NGN/);
+  assert.ok(!rendered.message.includes('<'));
+
+  const rules = await alertEngine.listRules({ enabledOnly: true });
+  assert.ok(rules.some((r) => r.code === 'traffic_significant'));
+
+  const user = await ensureUser('notify.fx.alert@example.com');
+  const sub = await userAlertService.create(user, {
+    kind: 'fx_rate',
+    fxBase: 'USD',
+    fxQuote: 'NGN',
+    thresholdValue: 1000,
+    thresholdDirection: 'above',
+  });
+  assert.equal(sub.kind, 'fx_rate');
+  const hits = await userAlertService.evaluateFxRate({ base: 'USD', quote: 'NGN', rate: 1600 });
+  assert.ok(hits.some((h) => h.subscriptionId === sub.id));
+  await userAlertService.remove(user, sub.id);
+});
+
+test('admin notification dashboard metrics shape', async () => {
+  const { notificationAdminService } = await import('../src/services/notificationAdminService.js');
+  const dash = await notificationAdminService.dashboard();
+  assert.ok(dash.metrics?.notifications);
+  assert.ok(Array.isArray(dash.rules));
+  assert.equal(typeof dash.pushConfigured, 'boolean');
+});
+
 test('cleanup pool', async () => {
   await closePool();
 });

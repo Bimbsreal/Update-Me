@@ -72,12 +72,16 @@ export function StatusPill({ status }) {
     status === 'removed' ||
     status === 'suspended' ||
     status === 'failing' ||
-    status === 'failed'
+    status === 'failed' ||
+    status === 'unhealthy' ||
+    status === 'critical'
       ? 'bg-red-50 text-red-800'
       : status === 'under_review' ||
           status === 'stale' ||
           status === 'warning' ||
-          status === 'partial'
+          status === 'partial' ||
+          status === 'degraded' ||
+          status === 'attention'
         ? 'bg-amber-50 text-amber-900'
         : status === 'confirmed' ||
             status === 'active' ||
@@ -88,8 +92,8 @@ export function StatusPill({ status }) {
           ? 'bg-emerald-50 text-emerald-800'
           : 'bg-slate-100 text-slate-700';
   return (
-    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${tone}`}>
-      {status || '—'}
+    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold capitalize ${tone}`}>
+      {status ? String(status).replace(/_/g, ' ') : '—'}
     </span>
   );
 }
@@ -102,15 +106,16 @@ export function EmptyState({ message }) {
   );
 }
 
-export function ConfirmAction({ label, danger, onConfirm, disabled }) {
+export function ConfirmAction({ label, danger, impact, onConfirm, disabled }) {
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={() => {
-        const reason = window.prompt(`${label}\n\nEnter a reason (required):`);
+        const impactLine = impact ? `\n\nImpact: ${impact}` : '';
+        const reason = window.prompt(`${label}${impactLine}\n\nEnter a reason (required):`);
         if (!reason || reason.trim().length < 3) return;
-        const ok = window.confirm(`Confirm: ${label}?`);
+        const ok = window.confirm(`${label}?\n\nThis cannot be undone from this screen without a follow-up action.`);
         if (!ok) return;
         onConfirm(reason.trim());
       }}

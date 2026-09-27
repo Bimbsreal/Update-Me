@@ -7,6 +7,9 @@ It does **not** contain secrets. Use your own secret store / environment for cre
 
 Update Me is a Nigeria-focused local information utility (traffic, fuel, transport, prices, safety, official updates, explore, home). This guide covers deployment, security, reliability, and observability expectations after the hardening pass.
 
+**VPS deployment runbook:** [DEPLOYMENT.md](./DEPLOYMENT.md)  
+**Day-2 operations:** [OPERATIONS.md](./OPERATIONS.md)
+
 ## Runtime requirements
 
 | Component | Requirement |
@@ -103,6 +106,8 @@ All responses include `X-Request-Id`. Do not expose database name/version public
 
 ## Nginx / SSE notes
 
+Sample production config: `deploy/nginx/update-me.conf`.
+
 ```nginx
 location /api/ {
   proxy_pass http://127.0.0.1:5000;
@@ -162,11 +167,14 @@ cd backend && npm run migrate
 
 ## Logging & observability
 
-- JSON access logs include: `requestId`, method, path, status, `durationMs`, optional `userId`
+- JSON access logs include: `requestId`, method, path, status, `durationMs`, optional `userId` / admin `role`
 - Slow requests (≥ 800ms) logged in production
 - Health poll spam is suppressed in production
 - Errors log `requestId` without passwords/tokens/private coordinates
 - Clients receive `X-Request-Id` for support correlation
+- Background jobs write to `job_runs`; FX/official keep detailed sync run tables
+- Admin **System health** aggregates app/DB/jobs/ingestion/providers/SSE/metrics
+- See **[OPERATIONS.md](./OPERATIONS.md)** for the operator runbook
 
 Recommended (outside this repo): ship stdout logs to your host logging stack; alert on 5xx rate, ready endpoint failures, FX/official sync error lines.
 

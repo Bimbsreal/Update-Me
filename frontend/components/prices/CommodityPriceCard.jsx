@@ -22,7 +22,7 @@ export function CommodityPriceCard({ item, compact = false, className }) {
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <span className="inline-flex items-center rounded-pill border border-brand-100 bg-brand-50 px-2.5 py-1 text-xs font-bold text-brand-800">
-          Community Reported
+          {item.sourceLabel || 'Community Report'}
         </span>
         {item.reportCount ? (
           <span className="text-xs font-semibold text-ink-soft">
@@ -66,12 +66,43 @@ export function CommodityPriceCard({ item, compact = false, className }) {
 
 export function PriceReportCard({ report, onConfirm, onCorrect }) {
   if (!report) return null;
+  const unitLabel =
+    report.variant?.displayName ||
+    report.price?.unit?.symbol ||
+    report.variant?.unit?.symbol ||
+    report.variant?.unitCode ||
+    '';
+  const locationLabel =
+    report.location?.area?.name ||
+    report.location?.name ||
+    report.place?.name ||
+    null;
+  const sourceLabel =
+    report.source?.typeLabel ||
+    report.report?.sourceTypeLabel ||
+    (report.report?.trustLabels || [])[0] ||
+    'Community report';
+  const verificationLabel =
+    report.verificationLabel ||
+    report.report?.verificationLabel ||
+    (report.verification === 'verified' || report.report?.verification === 'verified'
+      ? 'Verified'
+      : 'Unverified');
+  const observedAt =
+    report.observedAt || report.report?.observedAt || report.report?.occurredAt || report.createdAt;
+
   return (
     <article className="rounded-card border border-surface-border bg-white p-4 shadow-card">
       <div className="flex flex-wrap gap-1.5">
-        {(report.report?.trustLabels || []).map((label) => (
-          <ReportTrustLabel key={label} label={label} sourceType={report.report?.sourceType} />
-        ))}
+        <ReportTrustLabel label={sourceLabel} sourceType={report.report?.sourceType || report.source?.type} />
+        {verificationLabel ? (
+          <ReportTrustLabel label={verificationLabel} sourceType={report.report?.sourceType} />
+        ) : null}
+        {(report.report?.trustLabels || [])
+          .filter((l) => l !== sourceLabel && !/verified|community|official|market/i.test(l))
+          .map((label) => (
+            <ReportTrustLabel key={label} label={label} sourceType={report.report?.sourceType} />
+          ))}
       </div>
       <p className="mt-3 text-base font-bold text-ink tabular-nums">
         {formatPriceRange({
@@ -80,18 +111,24 @@ export function PriceReportCard({ report, onConfirm, onCorrect }) {
           currency: report.price?.currency,
           isRange: false,
         })}
+        {unitLabel ? (
+          <span className="text-sm font-semibold text-ink-muted"> / {unitLabel}</span>
+        ) : null}
       </p>
-      <p className="mt-1 text-xs text-ink-soft">
+      {locationLabel ? (
+        <p className="mt-2 text-sm text-ink-muted break-words">{locationLabel}</p>
+      ) : null}
+      {report.place?.name && report.place.name !== locationLabel ? (
+        <p className="mt-1 text-xs text-ink-soft break-words">{report.place.name}</p>
+      ) : null}
+      <p className="mt-2 text-xs text-ink-soft">
         {report.report?.lastConfirmedAt
           ? `Confirmed ${formatPriceAge(report.report.lastConfirmedAt)}`
-          : `Observed ${formatPriceAge(report.report?.occurredAt || report.createdAt)}`}
+          : `Observed ${formatPriceAge(observedAt)}`}
+        {report.freshness || report.report?.freshness
+          ? ` · ${String(report.freshness || report.report.freshness)}`
+          : ''}
       </p>
-      {report.place?.name ? (
-        <p className="mt-2 text-sm text-ink-muted break-words">{report.place.name}</p>
-      ) : null}
-      {report.location?.name ? (
-        <p className="mt-1 text-xs text-ink-soft break-words">{report.location.name}</p>
-      ) : null}
       {(onConfirm || onCorrect) && report.id ? (
         <div className="mt-3 flex flex-wrap gap-2">
           {onConfirm ? (

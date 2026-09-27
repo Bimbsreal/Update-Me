@@ -31,3 +31,41 @@ export function jurisdictionLabel(level) {
   };
   return map[level] || level;
 }
+
+export function priorityLabel(priority, fallbackLabel) {
+  if (fallbackLabel) return fallbackLabel;
+  const map = {
+    normal: 'Informational',
+    important: 'Important',
+    urgent: 'High Priority',
+    critical: 'Critical',
+  };
+  return map[priority] || priority || null;
+}
+
+export function freshnessParts(update) {
+  if (!update) return [];
+  const parts = [];
+  if (update.isExpired || update.freshnessLabel === 'Expired') {
+    parts.push({ label: 'Expired', tone: 'expired' });
+  } else if (update.freshnessLabel === 'Updated') {
+    parts.push({ label: 'Updated', tone: 'updated' });
+  } else {
+    parts.push({ label: 'Published', tone: 'published' });
+  }
+  if (update.effectiveAt) {
+    parts.push({ label: `Effective ${formatOfficialTime(update.effectiveAt)}`, tone: 'effective' });
+  }
+  if (update.expiresAt && !update.isExpired) {
+    parts.push({ label: `Expires ${formatOfficialTime(update.expiresAt)}`, tone: 'expires' });
+  }
+  return parts;
+}
+
+export function affectedLocationLabel(update) {
+  if (!update) return null;
+  const bits = [update.locationName, update.stateName].filter(Boolean);
+  if (bits.length) return bits.join(', ');
+  if (update.jurisdictionLevel === 'national') return 'Nigeria';
+  return jurisdictionLabel(update.jurisdictionLevel) || null;
+}

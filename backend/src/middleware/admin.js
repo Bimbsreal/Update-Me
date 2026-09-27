@@ -41,6 +41,7 @@ export async function loadAdminUser(userId) {
  */
 export function requireAdmin(options = {}) {
   const permission = options.permission || null;
+  const anyOf = Array.isArray(options.anyOf) ? options.anyOf.filter(Boolean) : null;
 
   return async function adminGate(req, res, next) {
     try {
@@ -49,7 +50,16 @@ export function requireAdmin(options = {}) {
       });
 
       const staff = await loadAdminUser(req.auth.userId);
-      if (permission && !roleHasPermission(staff.role, permission)) {
+      if (anyOf?.length) {
+        const ok = anyOf.some((p) => roleHasPermission(staff.role, p));
+        if (!ok) {
+          throw new AppError(
+            'You do not have permission for this administrative action.',
+            403,
+            'FORBIDDEN'
+          );
+        }
+      } else if (permission && !roleHasPermission(staff.role, permission)) {
         throw new AppError(
           'You do not have permission for this administrative action.',
           403,

@@ -12,17 +12,24 @@
     "migrate:status": "node src/db/migrate.js --status",
     "seed:geo": "node src/db/seed-geography.js",
     "seed:geo:full": "node src/db/seed-geography-full.js",
-    "test": "node --test tests/reports.test.js tests/traffic.test.js tests/fx.test.js tests/official.test.js tests/fuel.test.js tests/transport.test.js tests/prices.test.js tests/alerts.test.js tests/directions.test.js tests/community.test.js tests/notifications.test.js tests/admin.test.js tests/admin.http.test.js tests/explore.test.js tests/realtime.test.js tests/dataQuality.test.js tests/home.test.js tests/hardening.test.js tests/search.test.js tests/ingestion.test.js",
+    "seed:geo:full:dry": "node src/db/seed-geography-full.js --dry-run",
+    "test:locations": "node --test tests/locations.reference.test.js tests/location.intelligence.test.js",
+    "test": "node --test tests/reports.test.js tests/traffic.test.js tests/traffic.intelligence.test.js tests/fx.test.js tests/official.test.js tests/officialOps.test.js tests/fuel.test.js tests/fuel.admin.test.js tests/transport.test.js tests/prices.test.js tests/commodityPriceModel.test.js tests/commodities.admin.test.js tests/alerts.test.js tests/directions.test.js tests/community.test.js tests/notifications.test.js tests/admin.test.js tests/admin.http.test.js tests/explore.test.js tests/realtime.test.js tests/dataQuality.test.js tests/home.test.js tests/hardening.test.js tests/search.test.js tests/ingestion.test.js tests/locations.reference.test.js tests/location.intelligence.test.js tests/observability.test.js tests/deployment.test.js tests/preciseLocation.test.js tests/moderationCenter.test.js tests/adminAccess.test.js tests/analytics.test.js",
+    "test:analytics": "node --test tests/analytics.test.js",
+    "test:precise-location": "node --test tests/preciseLocation.test.js",
+    "test:deployment": "node --test tests/deployment.test.js",
+    "test:observability": "node --test tests/observability.test.js",
     "test:search": "node --test tests/search.test.js",
     "test:ingestion": "node --test tests/ingestion.test.js",
     "test:hardening": "node --test tests/hardening.test.js",
     "test:data-quality": "node --test tests/dataQuality.test.js",
     "test:realtime": "node --test tests/realtime.test.js",
     "test:explore": "node --test tests/explore.test.js",
-    "test:admin": "node --test tests/admin.test.js tests/admin.http.test.js",
+    "test:admin": "node --test tests/admin.test.js tests/admin.http.test.js tests/moderationCenter.test.js tests/adminAccess.test.js tests/fuel.admin.test.js tests/commodities.admin.test.js tests/officialOps.test.js",
     "test:fx": "node --test tests/fx.test.js",
-    "test:official": "node --test tests/official.test.js",
-    "test:fuel": "node --test tests/fuel.test.js"
+    "test:official": "node --test tests/official.test.js tests/officialOps.test.js",
+    "test:fuel": "node --test tests/fuel.test.js tests/fuel.admin.test.js",
+    "test:prices": "node --test tests/prices.test.js tests/commodityPriceModel.test.js tests/commodities.admin.test.js"
   },
   "engines": {
     "node": ">=20"

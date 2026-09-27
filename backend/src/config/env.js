@@ -2,16 +2,20 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { assertProductionSafeEnv, safeEnvSummary } from './productionGuards.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({
   path: path.resolve(__dirname, '../../.env'),
-  override: process.env.NODE_ENV !== 'production',
+  // Never override process env (systemd/PM2/shell win). .env only fills gaps.
+  override: false,
 });
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().default(5000),
+  /** Bind address. Prefer 127.0.0.1 in production behind Nginx. */
+  HOST: z.string().default('0.0.0.0'),
   API_PREFIX: z.string().default('/api/v1'),
   CORS_ORIGIN: z.string().default('http://localhost:3000'),
   DATABASE_URL: z.string().optional(),
@@ -73,16 +77,52 @@ const envSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+
+  // Web Push (optional). When unset, push delivery is a no-op; in-app still works.
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  VAPID_SUBJECT: z.string().default('mailto:ops@updateme.local'),
 });
 
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
-  console.error('Invalid environment configuration:', parsed.error.flatten().fieldErrors);
+  console.error(
+    JSON.stringify({
+      level: 'error',
+      msg: 'invalid_env',
+      fields: parsed.error.flatten().fieldErrors,
+    })
+  );
   process.exit(1);
 }
 
 export const env = parsed.data;
+
+const prodCheck = assertProductionSafeEnv(env);
+for (const warning of prodCheck.warnings) {
+  console.warn(JSON.stringify({ level: 'warn', msg: 'env_warning', warning }));
+}
+if (!prodCheck.ok) {
+  console.error(
+    JSON.stringify({
+      level: 'error',
+      msg: 'production_env_rejected',
+      errors: prodCheck.errors,
+    })
+  );
+  process.exit(1);
+}
+
+if (env.NODE_ENV === 'production') {
+  console.log(
+    JSON.stringify({
+      level: 'info',
+      msg: 'env_validated',
+      ...safeEnvSummary(env),
+    })
+  );
+}
 
 export function getDatabaseConfig() {
   const sslEnabled = Boolean(env.DB_SSL);

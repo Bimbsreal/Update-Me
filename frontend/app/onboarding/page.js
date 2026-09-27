@@ -7,10 +7,18 @@ import { useAuth } from '@/components/auth/AuthProvider';
 import { Button } from '@/components/ui/Button';
 import { FormError, Select } from '@/components/ui/Input';
 import { ApiError, geoApi } from '@/lib/api';
+import {
+  GEO_STATUS,
+  getCurrentPosition,
+  messageForStatus,
+} from '@/lib/geolocation';
+import { LOCATION_SOURCES } from '@/lib/locationSource';
+import { useLocationSourceOptional } from '@/components/location/LocationSourceProvider';
 
 export default function OnboardingPage() {
   const router = useRouter();
   const { user, loading, setLocation } = useAuth();
+  const locationSource = useLocationSourceOptional();
   const [mode, setMode] = useState('choose');
   const [states, setStates] = useState([]);
   const [lgas, setLgas] = useState([]);
@@ -19,11 +27,13 @@ export default function OnboardingPage() {
   const [lgaId, setLgaId] = useState('');
   const [areaId, setAreaId] = useState('');
   const [resolved, setResolved] = useState(null);
+  const [privateCoords, setPrivateCoords] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [selectedLabel, setSelectedLabel] = useState('');
+  const [geoStatus, setGeoStatus] = useState(GEO_STATUS.IDLE);
 
   useEffect(() => {
     if (!loading && !user) router.replace('/login');
@@ -89,42 +99,67 @@ export default function OnboardingPage() {
   async function useMyLocation() {
     setError('');
     setResolved(null);
-    if (!navigator.geolocation) {
-      setError('Location is not supported in this browser. Please choose manually.');
+    setPrivateCoords(null);
+    setMode('locate');
+    setGeoStatus(GEO_STATUS.REQUESTING);
+    setBusy(true);
+
+    const result = await getCurrentPosition({
+      enableHighAccuracy: false,
+      timeout: 12000,
+      maximumAge: 120000,
+    });
+
+    if (!result.ok) {
+      setBusy(false);
+      setGeoStatus(result.status);
+      setError(result.message || messageForStatus(result.status));
       setMode('manual');
       return;
     }
-    setBusy(true);
-    setMode('locate');
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        try {
-          const data = await geoApi.resolve(position.coords.latitude, position.coords.longitude);
-          setResolved(data.area);
-          setAreaId(data.area.id);
-          setSelectedLabel(`${data.area.name}, ${data.area.lga}, ${data.area.state}`);
-        } catch (err) {
-          setError(
-            err instanceof ApiError
-              ? err.message
-              : 'Location lookup failed. Please choose manually.'
-          );
-          setMode('manual');
-        } finally {
-          setBusy(false);
-        }
-      },
-      (geoError) => {
-        setBusy(false);
-        if (geoError.code === geoError.PERMISSION_DENIED) {
-          setError('Location permission was denied. You can choose your area manually.');
-        } else {
-          setError('We could not read your location. Please choose manually.');
-        }
-        setMode('manual');
-      },
-      { enableHighAccuracy: false, timeout: 12000 }
-    );
+
+    try {
+      const data = await geoApi.resolve(
+        result.position.lat,
+        result.position.lng,
+        result.position.accuracy
+      );
+      setResolved(data.area);
+      setAreaId(data.area.id);
+      setPrivateCoords({
+        lat: result.position.lat,
+        lng: result.position.lng,
+        accuracy: result.position.accuracy,
+      });
+      setSelectedLabel(`${data.area.name}, ${data.area.lga}, ${data.area.state}`);
+      setGeoStatus(GEO_STATUS.GRANTED);
+      locationSource?.setFromSelection({
+        source: LOCATION_SOURCES.DEVICE,
+        areaId: data.area.id,
+        locationId: data.area.locationId,
+        label: `${data.area.name}, ${data.area.lga}, ${data.area.state}`,
+        privateLat: result.position.lat,
+        privateLng: result.position.lng,
+        accuracy: result.position.accuracy,
+        public: {
+          name: data.area.name,
+          lga: data.area.lga,
+          state: data.area.state,
+          stateCode: data.area.stateCode,
+        },
+        lowAccuracy: data.area.lowAccuracy,
+      });
+    } catch (err) {
+      setGeoStatus(GEO_STATUS.ERROR);
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Location lookup failed. Please choose manually.'
+      );
+      setMode('manual');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function confirmArea(id, label) {
@@ -132,9 +167,35 @@ export default function OnboardingPage() {
     setCompleting(true);
     setError('');
     try {
-      const data = await setLocation(id);
+      const payload =
+        privateCoords && resolved?.id === id
+          ? {
+              areaId: id,
+              locationId: resolved.locationId,
+              privateLat: privateCoords.lat,
+              privateLng: privateCoords.lng,
+              accuracy: privateCoords.accuracy,
+            }
+          : id;
+      const data = await setLocation(payload);
       const area = data.user.currentArea;
       setSelectedLabel(label || `${area.name}, ${area.lga}, ${area.state}`);
+      locationSource?.setFromSelection({
+        source: privateCoords ? LOCATION_SOURCES.DEVICE : LOCATION_SOURCES.MANUAL,
+        areaId: area?.id || id,
+        locationId: area?.locationId,
+        label: label || `${area.name}, ${area.lga}, ${area.state}`,
+        privateCoords: privateCoords
+          ? {
+              lat: privateCoords.lat,
+              lng: privateCoords.lng,
+              accuracy: privateCoords.accuracy,
+            }
+          : null,
+        public: area
+          ? { name: area.name, lga: area.lga, state: area.state, stateCode: area.stateCode }
+          : undefined,
+      });
       setDone(true);
     } catch (err) {
       setCompleting(false);
@@ -183,18 +244,24 @@ export default function OnboardingPage() {
             type="button"
             variant={mode === 'locate' ? 'primary' : 'secondary'}
             onClick={useMyLocation}
-            disabled={busy}
+            disabled={busy || geoStatus === GEO_STATUS.REQUESTING}
             className="w-full"
+            aria-label="Use my current location"
           >
-            Use My Location
+            {geoStatus === GEO_STATUS.REQUESTING
+              ? 'Getting your location…'
+              : geoStatus === GEO_STATUS.GRANTED
+                ? 'Using your current location'
+                : 'Use my current location'}
           </Button>
           <Button
             type="button"
             variant={mode === 'manual' || mode === 'choose' ? 'primary' : 'secondary'}
             onClick={() => setMode('manual')}
             className="w-full"
+            aria-label="Choose location manually"
           >
-            Choose Manually
+            Choose location manually
           </Button>
         </div>
 

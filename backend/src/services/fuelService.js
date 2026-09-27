@@ -96,14 +96,15 @@ export const fuelService = {
     return fuelRepository.nearbyStations(query);
   },
 
-  async getStation(id) {
+  async getStation(id, { fuelType = 'pms' } = {}) {
     await reportRepository.applyFreshnessTransitions();
     const station = await fuelRepository.findStationById(id);
     if (!station || !station.isActive) {
       throw new AppError('Fuel station not found.', 404, 'STATION_NOT_FOUND');
     }
 
-    const [reports, official] = await Promise.all([
+    const { fuelAdminService } = await import('./fuelAdminService.js');
+    const [reports, official, history] = await Promise.all([
       fuelRepository.listFuelReports({
         stationId: id,
         freshness: 'any',
@@ -117,12 +118,29 @@ export const fuelService = {
           limit: 5,
         })
         .catch(() => ({ items: [] })),
+      fuelAdminService.priceHistory(id, { fuelType, limit: 40 }).catch(() => ({ items: [] })),
     ]);
+
+    const chartPoints = (history.items || [])
+      .filter((h) => h.price?.amount != null)
+      .map((h) => ({
+        rate: Number(h.price.amount),
+        at: h.observedAt,
+        sourceType: h.sourceType,
+        label: h.trustLabel,
+      }));
 
     return {
       station,
       recentReports: reports.items,
       officialUpdates: (official.items || []).filter((item) => item.isOfficial),
+      priceHistory: {
+        fuelType,
+        items: history.items || [],
+        points: chartPoints,
+        note: 'Historical observations only. Do not treat older points as the current pump price.',
+      },
+      asOf: new Date().toISOString(),
     };
   },
 
@@ -160,6 +178,7 @@ export const fuelService = {
       locationId,
       latitude: input.latitude ?? coords.lat ?? null,
       longitude: input.longitude ?? coords.lng ?? null,
+      occurredAt: input.observedAt || undefined,
       metadata: {
         module: 'fuel',
         fuelType: input.fuelType,
@@ -182,6 +201,8 @@ export const fuelService = {
       priceCurrency: 'NGN',
       priceUnit,
       queueCondition: input.queueCondition || 'unknown',
+      pricingContext: input.pricingContext || 'retail_pump',
+      observedAt: input.observedAt || null,
     });
 
     await reportRepository.addHistory({
@@ -200,6 +221,24 @@ export const fuelService = {
     });
 
     realtimePublisher.fuelUpdated(fuel);
+
+    if (input.priceAmount != null) {
+      const { notificationService, safeNotify } = await import('./notificationService.js');
+      safeNotify(
+        notificationService.notifyFuelObservation(
+          {
+            stationId: station.id,
+            station: { id: station.id, name: station.name, locationId },
+            locationId,
+            locationName: location.name,
+            fuelType: input.fuelType,
+            price: input.priceAmount,
+            note: description,
+          },
+          { actorUserId: userId }
+        )
+      );
+    }
 
     return fuel;
   },

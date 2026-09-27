@@ -184,6 +184,13 @@ test('create report with newStation inline', async () => {
   assert.equal(fuel.fuelType, 'ago');
   assert.equal(fuel.availability, 'limited');
   assert.ok(fuel.stationId);
+
+  const raw = await getPool().query(
+    `SELECT product_id, pricing_context FROM fuel_reports WHERE id = $1`,
+    [fuel.id]
+  );
+  assert.ok(raw.rows[0]?.product_id, 'product_id should be resolved from fuel_products');
+  assert.equal(raw.rows[0]?.pricing_context, 'retail_pump');
 });
 
 test.after(async () => {

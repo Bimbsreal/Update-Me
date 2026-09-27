@@ -4,15 +4,19 @@ import { requireAuth } from '../middleware/auth.js';
 import {
   createSavedArea,
   createSavedRoute,
+  createUserAlert,
   deleteSavedArea,
   deleteSavedRoute,
+  deleteUserAlert,
   getNotificationPreferences,
   getPersonalization,
   listSavedAreas,
   listSavedRoutes,
+  listUserAlerts,
   updateNotificationPreferences,
   updateSavedArea,
   updateSavedRoute,
+  updateUserAlert,
 } from '../controllers/notificationController.js';
 
 const writeLimiter = rateLimit({
@@ -34,6 +38,11 @@ router.use(requireAuth);
 router.get('/personalization', getPersonalization);
 router.get('/notification-preferences', getNotificationPreferences);
 router.put('/notification-preferences', writeLimiter, updateNotificationPreferences);
+
+router.get('/alert-subscriptions', listUserAlerts);
+router.post('/alert-subscriptions', writeLimiter, createUserAlert);
+router.patch('/alert-subscriptions/:id', writeLimiter, updateUserAlert);
+router.delete('/alert-subscriptions/:id', writeLimiter, deleteUserAlert);
 
 router.get('/saved-areas', listSavedAreas);
 router.post('/saved-areas', writeLimiter, createSavedArea);

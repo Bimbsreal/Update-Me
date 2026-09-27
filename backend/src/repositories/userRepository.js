@@ -154,34 +154,37 @@ export const geoRepository = {
     return result.rows[0] || null;
   },
 
-  async findNearestArea(lat, lng) {
+  async findNearestArea(lat, lng, { maxDistanceKm = 40 } = {}) {
     const result = await getPool().query(
-      `SELECT
-         a.id,
-         a.name,
-         a.lga_id,
-         a.state_id,
-         l.name AS lga_name,
-         s.name AS state_name,
-         s.code AS state_code,
-         (
-           6371 * acos(
-             least(1.0, greatest(-1.0,
-               cos(radians($1)) * cos(radians(a.centroid_lat)) *
-               cos(radians(a.centroid_lng) - radians($2)) +
-               sin(radians($1)) * sin(radians(a.centroid_lat))
-             ))
-           )
-         ) AS distance_km
-       FROM areas a
-       JOIN lgas l ON l.id = a.lga_id
-       JOIN states s ON s.id = a.state_id
-       WHERE a.is_active = TRUE
-         AND a.centroid_lat IS NOT NULL
-         AND a.centroid_lng IS NOT NULL
-       ORDER BY distance_km ASC
+      `SELECT * FROM (
+         SELECT
+           a.id,
+           a.name,
+           a.lga_id,
+           a.state_id,
+           l.name AS lga_name,
+           s.name AS state_name,
+           s.code AS state_code,
+           (
+             6371 * acos(
+               least(1.0, greatest(-1.0,
+                 cos(radians($1)) * cos(radians(a.centroid_lat)) *
+                 cos(radians(a.centroid_lng) - radians($2)) +
+                 sin(radians($1)) * sin(radians(a.centroid_lat))
+               ))
+             )
+           ) AS distance_km
+         FROM areas a
+         JOIN lgas l ON l.id = a.lga_id
+         JOIN states s ON s.id = a.state_id
+         WHERE a.is_active = TRUE
+           AND a.centroid_lat IS NOT NULL
+           AND a.centroid_lng IS NOT NULL
+       ) nearest
+       WHERE nearest.distance_km <= $3
+       ORDER BY nearest.distance_km ASC
        LIMIT 1`,
-      [lat, lng]
+      [lat, lng, maxDistanceKm]
     );
     return result.rows[0] || null;
   },

@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { authApi, locationsApi } from '@/lib/api';
+import { LocationSourceProvider } from '@/components/location/LocationSourceProvider';
 
 const AuthContext = createContext(null);
 
@@ -58,6 +59,7 @@ export function AuthProvider({ children }) {
       locationId: payload.locationId,
       privateLat: payload.privateLat,
       privateLng: payload.privateLng,
+      ...(payload.accuracy != null ? { accuracy: payload.accuracy } : {}),
     });
     setUser(data.user);
     return data;
@@ -80,7 +82,11 @@ export function AuthProvider({ children }) {
     [user, loading, error, register, login, logout, refresh, setLocation]
   );
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      <LocationSourceProvider>{children}</LocationSourceProvider>
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {

@@ -3,14 +3,26 @@ import {
   OFFICIAL_CATEGORIES,
   OFFICIAL_INGESTION_METHODS,
   OFFICIAL_JURISDICTION_LEVELS,
+  OFFICIAL_PRIORITIES,
   OFFICIAL_SOURCE_STATUSES,
+  OFFICIAL_UPDATE_TYPES,
 } from '../config/official.js';
 
 const categoryEnum = z.enum(OFFICIAL_CATEGORIES.map((c) => c.id));
 const jurisdictionEnum = z.enum(OFFICIAL_JURISDICTION_LEVELS);
 const ingestionEnum = z.enum(OFFICIAL_INGESTION_METHODS);
 const sourceStatusEnum = z.enum(OFFICIAL_SOURCE_STATUSES);
-const verificationEnum = z.enum(['unverified', 'pending', 'verified', 'rejected']);
+const verificationEnum = z.enum([
+  'unverified',
+  'pending',
+  'verified',
+  'rejected',
+  'suspended',
+  'retired',
+  'deprecated',
+]);
+const priorityEnum = z.enum(OFFICIAL_PRIORITIES.map((p) => p.id));
+const updateTypeEnum = z.enum(OFFICIAL_UPDATE_TYPES.map((t) => t.id));
 const agencyTypeEnum = z.enum([
   'federal',
   'state',
@@ -21,6 +33,11 @@ const agencyTypeEnum = z.enum([
   'other',
 ]);
 
+const boolish = z
+  .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
+  .optional()
+  .transform((v) => v === true || v === 'true' || v === '1');
+
 export const officialListQuerySchema = z.object({
   category: categoryEnum.optional(),
   source: z.string().trim().min(2).max(64).optional(),
@@ -30,6 +47,10 @@ export const officialListQuerySchema = z.object({
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
   freshnessHours: z.coerce.number().int().min(1).max(24 * 90).optional(),
+  includeExpired: boolish.default(false),
+  q: z.string().trim().min(1).max(120).optional(),
+  priority: priorityEnum.optional(),
+  updateType: updateTypeEnum.optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
@@ -40,6 +61,7 @@ export const officialNearbyQuerySchema = z.object({
   radiusKm: z.coerce.number().min(1).max(250).default(50),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   category: categoryEnum.optional(),
+  includeExpired: boolish.default(false),
 });
 
 export const officialIdParamSchema = z.object({

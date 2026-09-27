@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isWithinNigeriaBounds } from '../utils/geoBounds.js';
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const phoneRegex = /^\+?[0-9]{10,15}$/;
@@ -58,7 +59,19 @@ export const setLocationSchema = z.object({
   areaId: z.string().uuid('Select a valid area'),
 });
 
-export const resolveLocationSchema = z.object({
-  lat: z.coerce.number().min(-90).max(90),
-  lng: z.coerce.number().min(-180).max(180),
-});
+export const resolveLocationSchema = z
+  .object({
+    lat: z.coerce.number().min(-90).max(90),
+    lng: z.coerce.number().min(-180).max(180),
+    /** Optional browser accuracy in metres — never invent if omitted. */
+    accuracy: z.coerce.number().min(0).max(100000).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (!isWithinNigeriaBounds(data.lat, data.lng)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Coordinates are outside the supported Nigeria coverage area.',
+        path: ['lat'],
+      });
+    }
+  });

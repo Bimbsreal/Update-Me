@@ -170,6 +170,56 @@ test('admin/private fields never appear in search payloads', async () => {
   assert.equal(blob.includes('notification'), false);
 });
 
+test('FX natural query returns fx group when rates exist', async () => {
+  const data = await searchService.search({
+    q: 'USD today',
+    freshness: 'any',
+    limit: 10,
+  });
+  assert.ok(data.interpreted.categoryHints.includes('fx') || data.interpreted.category === 'fx');
+  if (!data.empty) {
+    assert.ok(data.items.some((i) => i.group === 'fx'));
+    for (const item of data.items.filter((i) => i.group === 'fx')) {
+      assert.match(item.title, /USD|GBP|EUR/i);
+      assert.ok(item.sourceLabel);
+    }
+  }
+});
+
+test('sort and radius params are accepted', async () => {
+  const data = await searchService.search({
+    q: 'lekki',
+    freshness: 'any',
+    sort: 'newest',
+    radiusKm: 15,
+    lat: 6.45,
+    lng: 3.45,
+    limit: 10,
+  });
+  assert.equal(data.interpreted.sort, 'newest');
+  assert.ok(data.interpreted.radiusKm === 15 || data.interpreted.locationContext);
+});
+
+test('alias expansion surfaces in interpretation', async () => {
+  const data = await searchService.search({
+    q: 'lekki epe',
+    freshness: 'any',
+    limit: 10,
+  });
+  assert.ok(Array.isArray(data.interpreted.aliasesApplied));
+  assert.ok(Array.isArray(data.interpreted.searchTerms));
+});
+
+test('search admin dashboard shape', async () => {
+  const { searchAdminService } = await import('../src/services/searchAdminService.js');
+  const dash = await searchAdminService.dashboard({ days: 7 });
+  assert.equal(dash.architecture.engine, 'postgresql');
+  assert.equal(dash.architecture.separateIndex, false);
+  assert.ok(Array.isArray(dash.zeroResultQueries));
+  assert.ok(Array.isArray(dash.indexHealth));
+  assert.equal(typeof dash.metrics.searchesWindow, 'number');
+});
+
 test('teardown pool', async () => {
   await closePool();
 });

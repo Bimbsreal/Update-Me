@@ -16,6 +16,11 @@ import {
 
 const STEPS = ['station', 'fuel', 'availability', 'price', 'notes', 'review'];
 
+function toLocalInputValue(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 export function FuelComposer({ onSubmitted, presetStation = null, compactHeader = false }) {
   const { user } = useAuth();
   const [step, setStep] = useState(presetStation ? 'fuel' : 'station');
@@ -35,6 +40,7 @@ export function FuelComposer({ onSubmitted, presetStation = null, compactHeader 
   const [availability, setAvailability] = useState('');
   const [priceAmount, setPriceAmount] = useState('');
   const [queueCondition, setQueueCondition] = useState('unknown');
+  const [observedAtLocal, setObservedAtLocal] = useState(() => toLocalInputValue());
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -66,6 +72,7 @@ export function FuelComposer({ onSubmitted, presetStation = null, compactHeader 
         priceUnit: fuelTypeMeta(fuelType)?.defaultUnit || 'litre',
         queueCondition: queueCondition || undefined,
         notes: notes.trim() || undefined,
+        observedAt: observedAtLocal ? new Date(observedAtLocal).toISOString() : undefined,
       };
       if (stationMode === 'existing' && stationId) {
         payload.stationId = stationId;
@@ -302,6 +309,16 @@ export function FuelComposer({ onSubmitted, presetStation = null, compactHeader 
                 ))}
               </select>
             </label>
+            <Input
+              label="When did you observe this?"
+              type="datetime-local"
+              value={observedAtLocal}
+              onChange={(e) => setObservedAtLocal(e.target.value)}
+              max={toLocalInputValue()}
+            />
+            <p className="text-xs text-ink-muted">
+              Defaults to now. Adjust if you observed the pump earlier.
+            </p>
           </>
         ) : null}
 
@@ -342,6 +359,10 @@ export function FuelComposer({ onSubmitted, presetStation = null, compactHeader 
                 <span className="font-semibold">Price:</span> ₦{priceAmount}
               </p>
             ) : null}
+            <p>
+              <span className="font-semibold">Observed:</span>{' '}
+              {observedAtLocal ? new Date(observedAtLocal).toLocaleString() : 'Now'}
+            </p>
           </div>
         ) : null}
       </div>

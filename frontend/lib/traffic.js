@@ -27,6 +27,25 @@ export function severityMeta(severity) {
   return TRAFFIC_SEVERITIES.find((item) => item.value === severity) || TRAFFIC_SEVERITIES.at(-1);
 }
 
+/** Public band labels (Low → Critical) mapped from DB severity values. */
+export function severityBandLabel(severity) {
+  switch (severity) {
+    case 'clear':
+    case 'light':
+      return 'Low';
+    case 'moderate':
+      return 'Moderate';
+    case 'heavy':
+      return 'Heavy';
+    case 'standstill':
+      return 'Severe';
+    case 'blocked':
+      return 'Critical';
+    default:
+      return 'Unknown';
+  }
+}
+
 export function severityClass(severity) {
   const tone = severityMeta(severity).tone;
   return statusClassMap[tone] || statusClassMap.expired;

@@ -121,6 +121,26 @@ export const trafficService = {
       console.error('[data-quality] traffic corroboration refresh failed:', err?.message);
     }
 
+    try {
+      const { trafficEventAdminService } = await import('./trafficEventAdminService.js');
+      await trafficEventAdminService.correlateCommunityReport({
+        reportId: report.id,
+        trafficId: traffic.id,
+        locationId: input.locationId,
+        severity: input.severity,
+        cause: input.cause || null,
+        roadId: input.roadId || null,
+        roadName: input.roadName || null,
+        directionLabel,
+        title,
+        description,
+        latitude: input.latitude ?? location.coordinates?.lat ?? null,
+        longitude: input.longitude ?? location.coordinates?.lng ?? null,
+      });
+    } catch (err) {
+      console.error('[traffic] community event correlation failed:', err?.message);
+    }
+
     safeNotify(
       notificationService.notifyTrafficReport(
         {
@@ -143,6 +163,12 @@ export const trafficService = {
   async list(query) {
     await reportRepository.applyFreshnessTransitions();
     return trafficRepository.list(query);
+  },
+
+  async listEvents(query) {
+    const { trafficEventAdminService } = await import('./trafficEventAdminService.js');
+    await trafficEventAdminService.expireStaleEvents({ limit: 100 }).catch(() => null);
+    return trafficEventAdminService.listPublic(query);
   },
 
   async nearby(query) {

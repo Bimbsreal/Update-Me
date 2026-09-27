@@ -42,6 +42,17 @@ export const metadata = {
       'Community-powered local information for Nigeria — traffic, fuel, transport, prices, and alerts.',
     siteName: 'Update Me',
     type: 'website',
+    locale: 'en_NG',
+  },
+  twitter: {
+    card: 'summary',
+    title: 'Update Me — Know what’s happening around you',
+    description:
+      'Community-powered local information for Nigeria — traffic, fuel, transport, prices, and alerts.',
+  },
+  robots: {
+    index: true,
+    follow: true,
   },
   other: {
     'mobile-web-app-capable': 'yes',

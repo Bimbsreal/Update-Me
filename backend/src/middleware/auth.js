@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import { AppError } from './errorHandler.js';
 import { getPool } from '../db/pool.js';
+import { sessionService } from '../services/sessionService.js';
 
 export const COOKIE_NAME = env.COOKIE_NAME || 'um_session';
 
@@ -47,6 +48,7 @@ export function cookieOptions() {
 
 /**
  * Require a valid session cookie for an active, non-suspended user.
+ * When JWT includes sid, the session row must be active (enables revoke).
  */
 export async function requireAuth(req, _res, next) {
   try {
@@ -75,7 +77,11 @@ export async function requireAuth(req, _res, next) {
       );
     }
 
-    req.auth = { userId: user.id };
+    if (decoded.sid) {
+      await sessionService.assertActive(decoded.sid, user.id);
+    }
+
+    req.auth = { userId: user.id, sessionId: decoded.sid || null };
     next();
   } catch (error) {
     next(error);

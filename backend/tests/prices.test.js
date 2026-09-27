@@ -86,9 +86,12 @@ test('creates price report with range, history, confirm/correct, nearby', async 
   assert.equal(price.price.amount, 7500);
   assert.equal(price.price.currency, 'NGN');
   assert.equal(price.report.sourceType, 'community');
-  assert.ok(price.report.trustLabels.includes('Community Reported'));
-  assert.ok(!price.report.trustLabels.includes('Official'));
+  assert.ok(price.report.trustLabels.includes('Community report'));
+  assert.ok(!price.report.trustLabels.some((l) => /^Official$/i.test(l)));
   assert.ok(price.report.freshness);
+  assert.equal(price.source?.type, 'community');
+  assert.equal(price.verification, 'unverified');
+  assert.ok(price.observedAt || price.submittedAt);
 
   const second = await pricesService.createReport(otherId, {
     commodityCode: 'rice',
@@ -127,7 +130,9 @@ test('creates price report with range, history, confirm/correct, nearby', async 
   const confirmed = await pricesService.confirm(otherId, price.id, {
     type: 'still_accurate',
   });
-  assert.ok(confirmed.report.trustLabels.includes('Community Confirmed'));
+  assert.ok(confirmed.report.trustLabels.includes('Verified'));
+  assert.equal(confirmed.verification, 'verified');
+  assert.equal(confirmed.source?.type, 'community');
 
   await assert.rejects(
     () => pricesService.confirm(otherId, price.id, { type: 'still_accurate' }),
@@ -191,6 +196,26 @@ test('invalid commodity or variant rejected', async () => {
       }),
     (err) => err instanceof AppError && err.code === 'COMMODITY_NOT_FOUND'
   );
+});
+
+test('prices summary exposes observed range window and asOf', async () => {
+  const summary = await pricesService.summary({ hours: 24, commodity: 'rice' });
+  assert.equal(typeof summary.total, 'number');
+  assert.ok(summary.asOf);
+  if (summary.observedRange) {
+    assert.ok(summary.observedRange.min != null);
+    assert.ok(summary.observedRange.max != null);
+    assert.equal(summary.observedRange.windowHours, 24);
+    assert.match(summary.observedRange.note, /not a claim/i);
+  }
+});
+
+test('price detail includes asOf and history periods include 24h', async () => {
+  const detail = await pricesService.getDetail('rice', '5kg', { period: '24h', freshness: 'any' });
+  assert.ok(detail.commodity);
+  assert.ok(detail.variant);
+  assert.ok(detail.asOf);
+  assert.equal(detail.history?.period, '24h');
 });
 
 test.after(async () => {

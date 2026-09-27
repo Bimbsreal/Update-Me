@@ -1,11 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { adminApi, ApiError } from '@/lib/api';
 import { ConfirmAction, EmptyState, StatusPill } from '@/components/admin/AdminUI';
 
 export default function AdminOfficialSourcesPage() {
   const [sources, setSources] = useState([]);
+  const [organizations, setOrganizations] = useState([]);
+  const [tab, setTab] = useState('sources');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -29,6 +32,10 @@ export default function AdminOfficialSourcesPage() {
       .officialSources()
       .then((d) => setSources(d.sources || []))
       .catch((err) => setError(err instanceof ApiError ? err.message : 'Failed to load sources'));
+    adminApi
+      .officialOrganizations({ limit: 100 })
+      .then((d) => setOrganizations(d.items || []))
+      .catch(() => setOrganizations([]));
   }, []);
 
   useEffect(() => {
@@ -97,12 +104,19 @@ export default function AdminOfficialSourcesPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Data sources</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Government & Official Sources</h1>
           <p className="mt-1 text-sm text-ink-muted">
-            Approved official sources only. Provider credentials are never shown.
+            Approved public-institution sources only. Official ≠ verified community, and credentials
+            are never shown.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <a
+            href="/admin/source-health"
+            className="rounded-lg border border-surface-border px-3 py-2 text-sm font-semibold"
+          >
+            Source health
+          </a>
           <a
             href="/admin/ingestion-runs"
             className="rounded-lg border border-surface-border px-3 py-2 text-sm font-semibold"
@@ -129,7 +143,58 @@ export default function AdminOfficialSourcesPage() {
 
       {error ? <p className="text-sm text-red-700">{error}</p> : null}
 
-      {showForm ? (
+      <div className="flex flex-wrap gap-1 border-b border-surface-border pb-2" role="tablist">
+        {[
+          { id: 'sources', label: 'Sources' },
+          { id: 'organizations', label: 'Organizations' },
+        ].map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
+            className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${
+              tab === t.id ? 'bg-brand-700 text-white' : 'text-ink-muted hover:bg-surface-muted'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'organizations' ? (
+        <div className="space-y-2">
+          <p className="text-xs text-ink-muted">
+            Organizations are distinct from individual feed/API sources. Sources link to an
+            organization when mapped.
+          </p>
+          {!organizations.length ? (
+            <EmptyState message="No organizations yet — they are created from verified sources." />
+          ) : (
+            <ul className="space-y-2">
+              {organizations.map((o) => (
+                <li
+                  key={o.id}
+                  className="rounded-xl border border-surface-border bg-white p-3 text-sm"
+                >
+                  <p className="font-semibold">
+                    {o.shortName || o.name}{' '}
+                    <span className="text-xs font-normal text-ink-muted">({o.code})</span>
+                  </p>
+                  <p className="text-xs text-ink-muted">
+                    {o.agencyType} · {o.jurisdictionLevel} · {o.sourceCount} source
+                    {o.sourceCount === 1 ? '' : 's'}
+                    {!o.isActive ? ' · inactive' : ''}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+
+      {tab === 'sources' && showForm ? (
         <form
           onSubmit={createSource}
           className="grid gap-2 rounded-xl border border-surface-border bg-white p-4 sm:grid-cols-2"
@@ -165,6 +230,7 @@ export default function AdminOfficialSourcesPage() {
               <option value="structured_feed">structured_feed</option>
               <option value="web_publication">web_publication</option>
               <option value="fixture">fixture</option>
+              <option value="manual_entry">manual_entry</option>
             </select>
           </label>
           <label className="text-xs font-medium text-ink-muted">
@@ -188,15 +254,21 @@ export default function AdminOfficialSourcesPage() {
 
       {!sources.length ? (
         <EmptyState message="No official sources configured." />
-      ) : (
+      ) : tab !== 'sources' ? null : (
         <ul className="space-y-3">
           {sources.map((s) => (
             <li key={s.id} className="rounded-xl border border-surface-border bg-white p-4 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
-                  <h2 className="font-bold">{s.organizationName}</h2>
+                  <Link
+                    href={`/admin/official-sources/${s.id}`}
+                    className="font-bold text-brand-800 hover:underline"
+                  >
+                    {s.organizationName}
+                  </Link>
                   <p className="text-xs text-ink-muted">
                     {s.id} · {s.agencyType} · {s.ingestionMethod} · every {s.syncIntervalMinutes}m
+                    {s.organizationId ? ' · org linked' : ''}
                   </p>
                   <p className="mt-1 text-xs text-ink-muted">
                     Last success:{' '}
@@ -210,6 +282,9 @@ export default function AdminOfficialSourcesPage() {
                   </p>
                   {s.lastErrorMessage ? (
                     <p className="mt-1 text-xs text-red-700 break-words">{s.lastErrorMessage}</p>
+                  ) : null}
+                  {s.credentialsConfigured ? (
+                    <p className="mt-1 text-xs text-ink-muted">Credentials: Configured</p>
                   ) : null}
                 </div>
                 <div className="flex flex-col items-end gap-1">

@@ -36,7 +36,7 @@ test('PWA icon files exist', () => {
   }
 });
 
-test('service worker never caches API or SSE', () => {
+test('service worker never caches API, SSE, or precise location payloads', () => {
   const sw = readFileSync(join(root, 'public', 'sw.js'), 'utf8');
   assert.match(sw, /isApiRequest/);
   assert.match(sw, /isRealtime/);
@@ -44,6 +44,16 @@ test('service worker never caches API or SSE', () => {
   assert.match(sw, /\/api\//);
   assert.doesNotMatch(sw, /cache\.addAll\(\[[^\]]*\/api\/v1/);
   assert.match(sw, /CACHE_VERSION/);
+  assert.match(sw, /Never caches API/);
+  assert.doesNotMatch(sw, /private_lat|privateLat|geolocation\.getCurrentPosition/);
+});
+
+test('geolocation helpers exist for PWA-safe precise location', () => {
+  const geo = readFileSync(join(root, 'lib', 'geolocation.js'), 'utf8');
+  assert.match(geo, /getCurrentPosition/);
+  assert.match(geo, /watchPosition/);
+  assert.match(geo, /clearWatch/);
+  assert.match(geo, /isSecureContext/);
 });
 
 test('BrandLogo defaults to public landing route', () => {

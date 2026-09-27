@@ -55,6 +55,7 @@ export const createFuelReportSchema = z
     queueCondition: queueEnum.optional().nullable(),
     notes: z.string().trim().max(4000).optional(),
     title: z.string().trim().min(3).max(160).optional(),
+    observedAt: z.coerce.date().optional(),
     latitude: z.coerce.number().min(-90).max(90).optional(),
     longitude: z.coerce.number().min(-180).max(180).optional(),
   })
@@ -138,4 +139,6 @@ export const fuelCorrectSchema = z.object({
 
 export const fuelSummaryQuerySchema = z.object({
   locationId: uuidSchema.optional(),
+  fuelType: fuelTypeEnum.optional().default('pms'),
+  hours: z.coerce.number().int().min(1).max(168).optional().default(24),
 });

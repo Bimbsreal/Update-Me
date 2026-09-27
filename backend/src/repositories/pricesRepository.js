@@ -1,33 +1,28 @@
 import { getPool } from '../db/pool.js';
-import { historyPeriodMeta, placeTypeLabel } from '../config/prices.js';
+import { historyPeriodMeta, placeTypeLabel, normalizeUnitPrice, pricingContextLabel, priceSourceLabel } from '../config/prices.js';
+import {
+  buildObservationApiFields,
+  freshnessFromObservation,
+  mapSourceType,
+  sourceTypeLabel,
+} from '../utils/priceObservationModel.js';
 
 function computeTrustLabels(row) {
   const labels = [];
-  if (row.source_type === 'official') labels.push('Official');
-  else if (row.source_type === 'aggregated') labels.push('Aggregated');
-  else labels.push('Community Reported');
-  if (row.status === 'confirmed' || Number(row.confirmed_accurate_count) > 0) {
-    labels.push('Community Confirmed');
-  }
-  if (row.status === 'stale') labels.push('Stale');
-  if (row.status === 'expired') labels.push('Expired');
-  if (row.status === 'expired' || (row.expires_at && new Date(row.expires_at) <= new Date())) {
-    labels.push('Historical');
-  }
+  const source = mapSourceType(row.source_type);
+  if (source === 'official') labels.push('Official / reference');
+  else if (source === 'market_reference') labels.push('Market / institutional reference');
+  else labels.push('Community report');
+  const obs = buildObservationApiFields(row);
+  if (obs.verification === 'verified') labels.push('Verified');
+  if (obs.freshness === 'stale') labels.push('Stale');
+  if (obs.freshness === 'expired') labels.push('Expired');
+  if (obs.freshness === 'expired') labels.push('Historical');
   return [...new Set(labels)];
 }
 
 function computeFreshnessLabel(row, now = new Date()) {
-  if (row.status === 'expired' || (row.expires_at && new Date(row.expires_at) <= now)) {
-    return 'expired';
-  }
-  if (row.status === 'stale') return 'stale';
-  const anchor = row.last_confirmed_at || row.occurred_at || row.created_at;
-  if (!anchor) return 'fresh';
-  const ageMs = now - new Date(anchor);
-  const staleMs = (row.stale_after_minutes || 720) * 60 * 1000;
-  if (ageMs >= staleMs) return 'stale';
-  return 'fresh';
+  return freshnessFromObservation(row, now, row.stale_after_minutes || 720);
 }
 
 function mapCommodity(row) {
@@ -37,6 +32,16 @@ function mapCommodity(row) {
     code: row.commodity_code || row.code,
     name: row.commodity_name || row.name,
     slug: row.commodity_slug || row.slug,
+    categoryId: row.category_id || row.commodity_category_id || null,
+    category:
+      row.category_name || row.commodity_category_name
+        ? {
+            id: row.category_id || row.commodity_category_id,
+            code: row.category_code || row.commodity_category_code,
+            name: row.category_name || row.commodity_category_name,
+            slug: row.category_slug || row.commodity_category_slug,
+          }
+        : null,
     sortOrder: row.commodity_sort_order ?? row.sort_order,
     isActive: row.commodity_is_active !== false && row.is_active !== false,
     variants: row.variants || undefined,
@@ -51,6 +56,20 @@ function mapVariant(row) {
     label: row.variant_label || row.label,
     quantity: row.quantity != null ? Number(row.quantity) : null,
     unitCode: row.unit_code,
+    unitId: row.unit_id || row.price_unit_id || null,
+    unit: row.price_unit_code
+      ? {
+          id: row.unit_id || row.price_unit_id,
+          code: row.price_unit_code,
+          name: row.price_unit_name,
+          symbol: row.price_unit_symbol,
+          unitType: row.price_unit_type,
+        }
+      : {
+          code: row.unit_code,
+          name: row.unit_code,
+          symbol: row.unit_code,
+        },
     displayName: row.display_name || row.variant_display_name,
     sortOrder: row.variant_sort_order ?? row.sort_order,
     commodityId: row.commodity_id,
@@ -60,6 +79,7 @@ function mapVariant(row) {
 function mapPriceReport(row) {
   if (!row) return null;
   const freshness = computeFreshnessLabel(row);
+  const obsFields = buildObservationApiFields(row, { includeReporter: false });
   return {
     id: row.price_id,
     reportId: row.report_id,
@@ -68,7 +88,20 @@ function mapPriceReport(row) {
     price: {
       amount: Number(row.price_amount),
       currency: row.price_currency || 'NGN',
+      unit: mapVariant(row)?.unit || null,
+      displayName: mapVariant(row)?.displayName || null,
     },
+    pricingContext: row.pricing_context || 'retail',
+    pricingContextLabel: pricingContextLabel(row.pricing_context || 'retail'),
+    publishedAt: row.published_at || null,
+    effectiveAt: row.effective_at || null,
+    normalized:
+      normalizeUnitPrice({
+        amount: row.price_amount,
+        quantity: row.quantity,
+        unitCode: row.price_unit_code || row.unit_code,
+        unitType: row.price_unit_type,
+      }) || null,
     place: row.place_id || row.place_label
       ? {
           id: row.place_id || null,
@@ -95,14 +128,22 @@ function mapPriceReport(row) {
         : null,
     distanceKm:
       row.distance_km != null ? Number(Number(row.distance_km).toFixed(2)) : undefined,
+    ...obsFields,
     report: {
       id: row.report_id,
       title: row.title,
       description: row.description,
       sourceType: row.source_type,
+      sourceTypeMapped: mapSourceType(row.source_type),
+      sourceTypeLabel: sourceTypeLabel(row.source_type),
       status: row.status,
+      moderationState: row.moderation_state,
       freshness,
+      verification: obsFields.verification,
+      moderation: obsFields.moderation,
       trustLabels: computeTrustLabels(row),
+      observedAt: obsFields.observedAt,
+      submittedAt: obsFields.submittedAt,
       occurredAt: row.occurred_at,
       expiresAt: row.expires_at,
       lastConfirmedAt: row.last_confirmed_at,
@@ -112,10 +153,8 @@ function mapPriceReport(row) {
         stillAccurate: Number(row.confirmed_accurate_count || 0),
         noLongerAccurate: Number(row.confirmed_inaccurate_count || 0),
       },
-      author: {
-        id: row.user_id,
-        displayName: row.author_display_name || null,
-      },
+      // Public: no private reporter fields
+      author: undefined,
     },
     createdAt: row.price_created_at || row.created_at,
   };
@@ -153,17 +192,30 @@ const priceSelect = `
   cpr.price_amount,
   cpr.price_currency,
   cpr.place_label,
+  cpr.source_reference,
+  cpr.pricing_context::text AS pricing_context,
+  cpr.published_at,
+  cpr.effective_at,
   cpr.created_at AS price_created_at,
   c.id AS commodity_id,
   c.code AS commodity_code,
   c.name AS commodity_name,
   c.slug AS commodity_slug,
+  c.category_id,
+  cc.code AS category_code,
+  cc.name AS category_name,
+  cc.slug AS category_slug,
   cv.id AS variant_id,
   cv.code AS variant_code,
   cv.label AS variant_label,
   cv.quantity,
   cv.unit_code,
+  cv.unit_id,
   cv.display_name AS variant_display_name,
+  pu.code AS price_unit_code,
+  pu.name AS price_unit_name,
+  pu.symbol AS price_unit_symbol,
+  pu.unit_type AS price_unit_type,
   pp.id AS place_id,
   COALESCE(pp.name, cpr.place_label) AS place_name,
   pp.place_type,
@@ -173,6 +225,7 @@ const priceSelect = `
   r.description,
   r.source_type,
   r.status,
+  r.moderation_state,
   r.latitude,
   r.longitude,
   r.occurred_at,
@@ -215,7 +268,9 @@ const priceSelect = `
 const priceJoins = `
   FROM commodity_price_reports cpr
   JOIN commodities c ON c.id = cpr.commodity_id
+  LEFT JOIN commodity_categories cc ON cc.id = c.category_id
   JOIN commodity_variants cv ON cv.id = cpr.variant_id
+  LEFT JOIN price_units pu ON pu.id = cv.unit_id
   JOIN reports r ON r.id = cpr.report_id
   JOIN report_categories rc ON rc.id = r.category_id AND rc.code = 'prices'
   JOIN locations loc ON loc.id = r.location_id
@@ -235,17 +290,23 @@ export const pricesRepository = {
 
   async listCommodities({ activeOnly = true } = {}) {
     const result = await getPool().query(
-      `SELECT id, code, name, slug, sort_order, is_active
-       FROM commodities
-       ${activeOnly ? 'WHERE is_active = TRUE' : ''}
-       ORDER BY sort_order ASC, name ASC`
+      `SELECT c.id, c.code, c.name, c.slug, c.sort_order, c.is_active,
+              c.category_id, cc.code AS category_code, cc.name AS category_name, cc.slug AS category_slug
+       FROM commodities c
+       LEFT JOIN commodity_categories cc ON cc.id = c.category_id
+       ${activeOnly ? 'WHERE c.is_active = TRUE' : ''}
+       ORDER BY c.sort_order ASC, c.name ASC`
     );
     const commodities = result.rows.map(mapCommodity);
     const variants = await getPool().query(
-      `SELECT id, commodity_id, code, label, quantity, unit_code, display_name, sort_order, is_active
-       FROM commodity_variants
-       ${activeOnly ? 'WHERE is_active = TRUE' : ''}
-       ORDER BY sort_order ASC, display_name ASC`
+      `SELECT cv.id, cv.commodity_id, cv.code, cv.label, cv.quantity, cv.unit_code, cv.unit_id,
+              cv.display_name, cv.sort_order, cv.is_active,
+              pu.code AS price_unit_code, pu.name AS price_unit_name,
+              pu.symbol AS price_unit_symbol, pu.unit_type AS price_unit_type
+       FROM commodity_variants cv
+       LEFT JOIN price_units pu ON pu.id = cv.unit_id
+       ${activeOnly ? 'WHERE cv.is_active = TRUE' : ''}
+       ORDER BY cv.sort_order ASC, cv.display_name ASC`
     );
     const byCommodity = new Map();
     for (const row of variants.rows) {
@@ -260,9 +321,11 @@ export const pricesRepository = {
 
   async findCommodityByCodeOrSlug(value) {
     const result = await getPool().query(
-      `SELECT id, code, name, slug, sort_order, is_active
-       FROM commodities
-       WHERE lower(code) = lower($1) OR lower(slug) = lower($1)
+      `SELECT c.id, c.code, c.name, c.slug, c.sort_order, c.is_active,
+              c.category_id, cc.code AS category_code, cc.name AS category_name, cc.slug AS category_slug
+       FROM commodities c
+       LEFT JOIN commodity_categories cc ON cc.id = c.category_id
+       WHERE lower(c.code) = lower($1) OR lower(c.slug) = lower($1)
        LIMIT 1`,
       [value]
     );
@@ -271,26 +334,32 @@ export const pricesRepository = {
 
   async findCommodityById(id) {
     const result = await getPool().query(
-      `SELECT id, code, name, slug, sort_order, is_active FROM commodities WHERE id = $1`,
+      `SELECT c.id, c.code, c.name, c.slug, c.sort_order, c.is_active,
+              c.category_id, cc.code AS category_code, cc.name AS category_name, cc.slug AS category_slug
+       FROM commodities c
+       LEFT JOIN commodity_categories cc ON cc.id = c.category_id
+       WHERE c.id = $1`,
       [id]
     );
     return mapCommodity(result.rows[0]);
   },
 
   async findVariant({ commodityId, variantId, variantCode }) {
+    const variantSelect = `
+      SELECT cv.id, cv.commodity_id, cv.code, cv.label, cv.quantity, cv.unit_code, cv.unit_id,
+             cv.display_name, cv.sort_order, cv.is_active,
+             pu.code AS price_unit_code, pu.name AS price_unit_name,
+             pu.symbol AS price_unit_symbol, pu.unit_type AS price_unit_type
+      FROM commodity_variants cv
+      LEFT JOIN price_units pu ON pu.id = cv.unit_id`;
     if (variantId) {
-      const result = await getPool().query(
-        `SELECT id, commodity_id, code, label, quantity, unit_code, display_name, sort_order, is_active
-         FROM commodity_variants WHERE id = $1`,
-        [variantId]
-      );
+      const result = await getPool().query(`${variantSelect} WHERE cv.id = $1`, [variantId]);
       return mapVariant(result.rows[0]);
     }
     const result = await getPool().query(
-      `SELECT id, commodity_id, code, label, quantity, unit_code, display_name, sort_order, is_active
-       FROM commodity_variants
-       WHERE commodity_id = $1 AND (lower(code) = lower($2) OR lower(display_name) = lower($2))
-         AND is_active = TRUE
+      `${variantSelect}
+       WHERE cv.commodity_id = $1 AND (lower(cv.code) = lower($2) OR lower(cv.display_name) = lower($2))
+         AND cv.is_active = TRUE
        LIMIT 1`,
       [commodityId, variantCode]
     );
@@ -317,8 +386,9 @@ export const pricesRepository = {
     const result = await getPool().query(
       `INSERT INTO commodity_price_reports (
          report_id, commodity_id, variant_id, place_id, place_label,
-         price_amount, price_currency
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+         price_amount, price_currency, source_reference, pricing_context,
+         published_at, effective_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::commodity_pricing_context,$10,$11)
        RETURNING id`,
       [
         fields.reportId,
@@ -328,6 +398,10 @@ export const pricesRepository = {
         fields.placeLabel?.trim() || null,
         fields.priceAmount,
         fields.priceCurrency || 'NGN',
+        fields.sourceReference?.trim() || null,
+        fields.pricingContext || 'retail',
+        fields.publishedAt || null,
+        fields.effectiveAt || null,
       ]
     );
     return this.findPriceById(result.rows[0].id);
@@ -483,7 +557,9 @@ export const pricesRepository = {
          (ARRAY_AGG(r.location_id ORDER BY COALESCE(r.last_confirmed_at, r.occurred_at, r.created_at) DESC))[1] AS location_id,
          (ARRAY_AGG(loc.name ORDER BY COALESCE(r.last_confirmed_at, r.occurred_at, r.created_at) DESC))[1] AS location_name,
          (ARRAY_AGG(COALESCE(pp.name, cpr.place_label) ORDER BY COALESCE(r.last_confirmed_at, r.occurred_at, r.created_at) DESC)
-           FILTER (WHERE COALESCE(pp.name, cpr.place_label) IS NOT NULL))[1] AS place_name
+           FILTER (WHERE COALESCE(pp.name, cpr.place_label) IS NOT NULL))[1] AS place_name,
+         (ARRAY_AGG(r.source_type ORDER BY COALESCE(r.last_confirmed_at, r.occurred_at, r.created_at) DESC))[1] AS latest_source_type,
+         (ARRAY_AGG(cpr.pricing_context::text ORDER BY COALESCE(r.last_confirmed_at, r.occurred_at, r.created_at) DESC))[1] AS latest_pricing_context
        ${priceJoins}
        ${whereSql}
        GROUP BY c.id, c.code, c.name, c.slug, cv.id, cv.code, cv.label, cv.quantity, cv.unit_code, cv.display_name
@@ -518,6 +594,11 @@ export const pricesRepository = {
       placeName: row.place_name || null,
       reportCount: row.report_count,
       mostRecentAt: row.most_recent_at,
+      sourceType: row.latest_source_type || 'community',
+      pricingContext: row.latest_pricing_context || 'retail',
+      sourceLabel: priceSourceLabel(row.latest_source_type, {
+        pricingContext: row.latest_pricing_context,
+      }),
     }));
 
     return {
@@ -632,22 +713,79 @@ export const pricesRepository = {
     };
   },
 
-  async summary({ locationId = null } = {}) {
+  async summary({ locationId = null, commodity = null, hours = 24 } = {}) {
     const params = [];
-    const locationClause = locationId
-      ? `AND r.location_id = $${params.push(locationId)}`
-      : '';
+    const filters = [
+      `r.visibility = 'public'`,
+      `r.status IN ('submitted','active','confirmed')`,
+      `(r.expires_at IS NULL OR r.expires_at > NOW())`,
+    ];
+    if (locationId) {
+      params.push(locationId);
+      filters.push(`r.location_id = $${params.length}`);
+    }
+    if (commodity) {
+      params.push(commodity);
+      filters.push(
+        `(lower(c.code) = lower($${params.length}) OR lower(c.slug) = lower($${params.length}))`
+      );
+    }
+    const windowHours = Math.min(Math.max(Number(hours) || 24, 1), 168);
+    params.push(windowHours);
+    const hoursParam = params.length;
+
     const result = await getPool().query(
       `SELECT COUNT(*)::int AS total,
               COUNT(DISTINCT cpr.commodity_id)::int AS commodities,
-              COUNT(DISTINCT cpr.variant_id)::int AS variants
+              COUNT(DISTINCT cpr.variant_id)::int AS variants,
+              MIN(cpr.price_amount) FILTER (
+                WHERE cpr.price_amount IS NOT NULL
+                  AND cpr.pricing_context IN ('retail','market','supermarket','local_seller')
+                  AND COALESCE(r.occurred_at, r.created_at) >= NOW() - make_interval(hours => $${hoursParam})
+              ) AS min_price,
+              MAX(cpr.price_amount) FILTER (
+                WHERE cpr.price_amount IS NOT NULL
+                  AND cpr.pricing_context IN ('retail','market','supermarket','local_seller')
+                  AND COALESCE(r.occurred_at, r.created_at) >= NOW() - make_interval(hours => $${hoursParam})
+              ) AS max_price,
+              COUNT(*) FILTER (
+                WHERE cpr.price_amount IS NOT NULL
+                  AND cpr.pricing_context IN ('retail','market','supermarket','local_seller')
+                  AND COALESCE(r.occurred_at, r.created_at) >= NOW() - make_interval(hours => $${hoursParam})
+              )::int AS range_observations,
+              PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY cpr.price_amount) FILTER (
+                WHERE cpr.price_amount IS NOT NULL
+                  AND cpr.pricing_context IN ('retail','market','supermarket','local_seller')
+                  AND COALESCE(r.occurred_at, r.created_at) >= NOW() - make_interval(hours => $${hoursParam})
+              ) AS median_price
        FROM commodity_price_reports cpr
        JOIN reports r ON r.id = cpr.report_id
-       WHERE r.visibility = 'public'
-         AND ${freshnessClause('fresh')}
-         ${locationClause}`,
+       JOIN commodities c ON c.id = cpr.commodity_id
+       WHERE ${filters.join(' AND ')}`,
       params
     );
-    return result.rows[0] || { total: 0, commodities: 0, variants: 0 };
+    const row = result.rows[0] || {};
+    const minP = row.min_price != null ? Number(row.min_price) : null;
+    const maxP = row.max_price != null ? Number(row.max_price) : null;
+    const medianP = row.median_price != null ? Number(row.median_price) : null;
+    return {
+      total: row.total || 0,
+      commodities: row.commodities || 0,
+      variants: row.variants || 0,
+      observedRange:
+        minP != null && maxP != null
+          ? {
+              min: minP,
+              max: maxP,
+              median: medianP,
+              currency: 'NGN',
+              observationCount: row.range_observations || 0,
+              windowHours,
+              commodity: commodity || null,
+              note: `Based on ${row.range_observations || 0} retail/market observations in the last ${windowHours} hours. Not a claim of every seller in the area.`,
+            }
+          : null,
+      asOf: new Date().toISOString(),
+    };
   },
 };

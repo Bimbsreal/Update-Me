@@ -201,8 +201,9 @@ test('successful sync, attribution, filters, and duplicate prevention', async ()
     assert.equal(filtered.items[0].category, 'fuel_petroleum');
 
     const one = await officialService.getById(listed.items[0].id);
-    assert.equal(one.id, listed.items[0].id);
-    assert.ok(one.originalUrl);
+    assert.equal(one.update.id, listed.items[0].id);
+    assert.ok(one.update.originalUrl);
+    assert.ok(one.asOf);
   } finally {
     restore();
   }

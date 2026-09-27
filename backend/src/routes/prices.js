@@ -11,6 +11,7 @@ import {
   listCommodities,
   listPrices,
   nearbyPrices,
+  comparePrices,
   priceReportHistory,
   pricesSummary,
 } from '../controllers/pricesController.js';
@@ -58,6 +59,7 @@ router.get('/taxonomy', getPricesTaxonomy);
 router.get('/commodities', listCommodities);
 router.get('/summary', pricesSummary);
 router.get('/nearby', nearbyPrices);
+router.get('/compare', comparePrices);
 router.get('/', listPrices);
 router.post('/', requireAuth, createLimiter, createPriceReport);
 router.get('/reports/:id', softAuth, getPriceReport);

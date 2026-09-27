@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/components/auth/AuthProvider';
 import { LocationSelector } from '@/components/location/LocationSelector';
+import { useLocationSource } from '@/components/location/LocationSourceProvider';
 import { useRealtime } from '@/components/realtime/RealtimeProvider';
 import { ConflictBreakdown } from '@/components/quality/QualitySignals';
 import {
@@ -17,6 +18,7 @@ import {
 } from '@/components/home/HomeParts';
 import { ApiError, homeApi } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { LOCATION_SOURCES, contextModeTitle } from '@/lib/locationSource';
 
 function qualityBits(item) {
   const parts = [];
@@ -43,6 +45,7 @@ function qualityBits(item) {
 
 export default function HomePage() {
   const { user, setLocation } = useAuth();
+  const { context, setSavedSource, setFromSelection, source } = useLocationSource();
   const { subscribe, setExploreLocationId } = useRealtime();
   const [home, setHome] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -98,6 +101,10 @@ export default function HomePage() {
   async function handleSelectArea(selection) {
     await setLocation(selection);
     setSavedAreaId('');
+    setFromSelection({
+      ...selection,
+      source: selection.source || (selection.privateLat ? LOCATION_SOURCES.DEVICE : LOCATION_SOURCES.MANUAL),
+    });
     setSelectorOpen(false);
   }
 
@@ -107,8 +114,12 @@ export default function HomePage() {
     await loadHome({ silent: true });
   }
 
-  const contextLabel = home?.location?.label || user?.currentArea?.name || 'Your area';
+  const contextLabel = home?.location?.label || user?.currentArea?.name || context.label || 'Your area';
   const contextSubtitle = home?.location?.contextLabel || null;
+  const modeTitle =
+    savedAreaId
+      ? contextModeTitle(LOCATION_SOURCES.SAVED)
+      : contextModeTitle(source || context.source || (home?.location?.mode === 'saved_area' ? 'saved' : 'manual'));
 
   const empty = home?.meta?.empty;
 
@@ -230,25 +241,32 @@ export default function HomePage() {
           </HomeSection>
 
           <HomeSection
-            title="Fuel"
+            title="Fuel Prices Near You"
             href={home.fuel.modulePath}
-            actionLabel="View fuel"
-            emptyMessage={home.fuel.emptyMessage}
+            actionLabel="View Fuel Prices"
+            emptyMessage={
+              home.fuel.emptyMessage || 'Choose your location to see nearby pump prices.'
+            }
           >
             {home.fuel.items?.length
-              ? home.fuel.items.map((item) => (
+              ? home.fuel.items.slice(0, 2).map((item) => (
                   <Link
                     key={item.id}
                     href={item.detailPath}
                     className="block rounded-lg border border-surface-border/80 px-3 py-2 hover:border-brand-200"
                   >
-                    <p className="text-sm font-bold text-ink">{item.name}</p>
-                    <p className="text-sm text-ink-muted">
-                      Petrol
-                      {formatNaira(item.price?.amount) ? ` · ${formatNaira(item.price.amount)}` : ''}
-                      {item.availabilityLabel ? ` · ${item.availabilityLabel}` : ''}
+                    <p className="text-sm font-bold text-ink">
+                      PMS
+                      {formatNaira(item.price?.amount)
+                        ? `: ${formatNaira(item.price.amount)}/L`
+                        : ''}
                     </p>
-                    <HomeMetaLine>{qualityBits(item)}</HomeMetaLine>
+                    <p className="text-sm text-ink-muted">{item.name}</p>
+                    <HomeMetaLine>
+                      {item.price?.observedAt || item.updatedAt
+                        ? `Last updated: ${formatHomeAge(item.price?.observedAt || item.updatedAt)}`
+                        : qualityBits(item)}
+                    </HomeMetaLine>
                   </Link>
                 ))
               : null}
@@ -287,13 +305,15 @@ export default function HomePage() {
           </HomeSection>
 
           <HomeSection
-            title="Prices"
+            title="Commodity Watch"
             href={home.prices.modulePath}
-            actionLabel="View prices"
-            emptyMessage={home.prices.emptyMessage}
+            actionLabel="View Prices"
+            emptyMessage={
+              home.prices.emptyMessage || 'Choose your location to see nearby commodity prices.'
+            }
           >
             {home.prices.items?.length
-              ? home.prices.items.map((item) => (
+              ? home.prices.items.slice(0, 3).map((item) => (
                   <Link
                     key={`${item.commodity?.id}-${item.variant?.id}`}
                     href={item.detailPath}
@@ -305,18 +325,21 @@ export default function HomePage() {
                   >
                     <p className="text-sm font-bold text-ink">
                       {item.commodity?.name}
-                      {item.variant?.displayName ? ` · ${item.variant.displayName}` : ''}
-                    </p>
-                    <p className="text-sm text-ink-muted">
                       {item.priceRange?.min != null
-                        ? `${formatNaira(item.priceRange.min)}${
-                            item.priceRange.max != null && item.priceRange.max !== item.priceRange.min
+                        ? ` · ${formatNaira(item.priceRange.min)}${
+                            item.priceRange.max != null &&
+                            item.priceRange.max !== item.priceRange.min
                               ? `–${formatNaira(item.priceRange.max)}`
                               : ''
                           }`
-                        : 'Recent price'}
+                        : ''}
+                      {item.variant?.displayName ? ` / ${item.variant.displayName}` : ''}
                     </p>
-                    <HomeMetaLine>{formatHomeAge(item.updatedAt)}</HomeMetaLine>
+                    <HomeMetaLine>
+                      {formatHomeAge(item.updatedAt)
+                        ? `Last updated: ${formatHomeAge(item.updatedAt)}`
+                        : 'Community observations — not an official price'}
+                    </HomeMetaLine>
                   </Link>
                 ))
               : null}
@@ -437,6 +460,7 @@ export default function HomePage() {
       </div>
 
       <HomeLocationBar
+        modeTitle={modeTitle}
         label={contextLabel}
         subtitle={
           user?.currentArea
@@ -449,8 +473,25 @@ export default function HomePage() {
       <HomeSavedSwitcher
         areas={home?.savedAreas || []}
         activeSavedAreaId={savedAreaId}
-        onSelectCurrent={() => setSavedAreaId('')}
-        onSelectArea={(area) => setSavedAreaId(area.id)}
+        onSelectCurrent={() => {
+          setSavedAreaId('');
+          if (context.source === LOCATION_SOURCES.SAVED) {
+            setFromSelection({
+              source: LOCATION_SOURCES.MANUAL,
+              locationId: user?.currentArea?.locationId,
+              areaId: user?.currentArea?.id,
+              label: user?.currentArea?.name,
+            });
+          }
+        }}
+        onSelectArea={(area) => {
+          setSavedAreaId(area.id);
+          setSavedSource({
+            label: area.displayName || area.locationName,
+            locationId: area.locationId,
+            public: { name: area.displayName || area.locationName },
+          });
+        }}
       />
 
       <HomeLiveNotice count={pendingCount} label={pendingLabel} onRefresh={handleRefreshLive} />

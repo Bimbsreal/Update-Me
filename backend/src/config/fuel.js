@@ -5,6 +5,7 @@
 export const FUEL_PRODUCT_TYPES = Object.freeze([
   { id: 'pms', label: 'PMS / Petrol', shortLabel: 'Petrol', defaultUnit: 'litre' },
   { id: 'ago', label: 'AGO / Diesel', shortLabel: 'Diesel', defaultUnit: 'litre' },
+  { id: 'dpk', label: 'DPK / Kerosene', shortLabel: 'Kerosene', defaultUnit: 'litre' },
   { id: 'lpg', label: 'LPG / Cooking Gas', shortLabel: 'LPG', defaultUnit: 'kg' },
 ]);
 

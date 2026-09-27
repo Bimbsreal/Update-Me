@@ -4,13 +4,20 @@ import { AppError } from '../middleware/errorHandler.js';
 
 const CATEGORY_KEYWORDS = [
   { category: 'fuel', words: ['fuel', 'petrol', 'diesel', 'pms', 'ago', 'station', 'filling'] },
-  { category: 'traffic', words: ['traffic', 'jam', 'congestion', 'gridlock'] },
-  { category: 'alerts', words: ['alert', 'blockage', 'flood', 'flooding', 'accident', 'danger'] },
+  { category: 'traffic', words: ['traffic', 'jam', 'congestion', 'gridlock', 'closure', 'road closure'] },
+  { category: 'alerts', words: ['alert', 'blockage', 'flood', 'flooding', 'accident', 'danger', 'hazard'] },
   { category: 'transport', words: ['fare', 'bus', 'keke', 'danfo', 'route'] },
-  { category: 'prices', words: ['price', 'prices', 'commodity', 'market'] },
-  { category: 'official', words: ['official', 'frsc', 'nmdpra', 'agency', 'government'] },
+  { category: 'prices', words: ['price', 'prices', 'commodity', 'market', 'cheapest'] },
+  { category: 'fx', words: ['fx', 'forex', 'exchange rate', 'dollar', 'usd', 'gbp', 'eur'] },
+  { category: 'official', words: ['official', 'frsc', 'nmdpra', 'nnpcl', 'nnpc', 'lastma', 'agency', 'government', 'updates'] },
   { category: 'community', words: ['question', 'ask', 'community'] },
   { category: 'places', words: ['area', 'road', 'landmark', 'lga'] },
+];
+
+const FX_PAIR_PATTERNS = [
+  { re: /\b(usd|dollar|\$)\b/i, base: 'USD', quote: 'NGN', label: 'USD/NGN' },
+  { re: /\b(gbp|pound|£)\b/i, base: 'GBP', quote: 'NGN', label: 'GBP/NGN' },
+  { re: /\b(eur|euro|€)\b/i, base: 'EUR', quote: 'NGN', label: 'EUR/NGN' },
 ];
 
 /** Commodity names that hint Prices without being stripped from the query. */
@@ -25,14 +32,56 @@ const FRESHNESS_SQL = {
   any: `AND r.status IN ('submitted','active','confirmed','stale')`,
 };
 
-function normalizeQuery(raw) {
+export function normalizeQuery(raw) {
   return String(raw || '')
     .trim()
     .toLowerCase()
     .replace(/[–—]/g, '-')
     .replace(/\s+/g, ' ')
-    .replace(/[^\w\s\-']/g, '')
+    .replace(/[^\w\s\-'/]/g, '')
     .trim();
+}
+
+function detectFxPairs(normalized) {
+  const pairs = [];
+  for (const p of FX_PAIR_PATTERNS) {
+    if (p.re.test(normalized) || normalized.includes(`${p.base.toLowerCase()}/${p.quote.toLowerCase()}`)) {
+      pairs.push(p);
+    }
+  }
+  if (/\bfx\b|\bforex\b|\bexchange\b/.test(normalized) && pairs.length === 0) {
+    pairs.push(FX_PAIR_PATTERNS[0]);
+  }
+  return pairs;
+}
+
+async function recordQueryMetric({
+  normalized,
+  category,
+  resultCount,
+  latencyMs,
+  hadLocation,
+  mode,
+}) {
+  try {
+    const pool = getPool();
+    await pool.query(
+      `INSERT INTO search_query_metrics (
+         normalized_query, category, result_count, zero_result, latency_ms, had_location, mode
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        String(normalized || '').slice(0, 120) || 'empty',
+        category || 'all',
+        Math.max(0, Number(resultCount) || 0),
+        Number(resultCount) === 0,
+        latencyMs == null ? null : Math.max(0, Math.round(Number(latencyMs))),
+        Boolean(hadLocation),
+        mode === 'suggest' ? 'suggest' : 'full',
+      ]
+    );
+  } catch {
+    /* analytics must never break search */
+  }
 }
 
 function escapeLike(value) {
@@ -43,7 +92,11 @@ function detectCategoryHints(normalized) {
   const hints = new Set();
   for (const entry of CATEGORY_KEYWORDS) {
     for (const word of entry.words) {
-      if (normalized.includes(word)) hints.add(entry.category);
+      if (word.includes(' ')) {
+        if (normalized.includes(word)) hints.add(entry.category);
+      } else if (new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(normalized)) {
+        hints.add(entry.category);
+      }
     }
   }
   for (const word of COMMODITY_HINT_WORDS) {
@@ -108,15 +161,24 @@ async function resolveAliases(pool, normalized) {
        FROM search_aliases
        WHERE lower(alias) = $1
           OR (
-            char_length($1) >= char_length(alias)
-            AND lower($1) LIKE '%' || lower(alias) || '%'
+            char_length(alias) >= 4
+            AND (
+              lower($1) = lower(alias)
+              OR lower($1) LIKE lower(alias) || ' %'
+              OR lower($1) LIKE '% ' || lower(alias)
+              OR lower($1) LIKE '% ' || lower(alias) || ' %'
+              OR lower($1) LIKE '%-' || lower(alias)
+              OR lower($1) LIKE lower(alias) || '-%'
+            )
           )
           OR (
-            abs(char_length(alias) - char_length($1)) <= 2
-            AND similarity(lower(alias), $1) > 0.55
+            char_length(alias) >= 4
+            AND abs(char_length(alias) - char_length($1)) <= 3
+            AND similarity(lower(alias), $1) > 0.6
           )
        ORDER BY
          CASE WHEN lower(alias) = $1 THEN 0 ELSE 1 END,
+         char_length(alias) DESC,
          similarity(lower(alias), $1) DESC
        LIMIT 5`,
       [normalized]
@@ -139,7 +201,7 @@ async function resolveContextCoords(pool, { locationId, lat, lng }) {
   return { lat: Number(row.latitude), lng: Number(row.longitude), source: 'location' };
 }
 
-function rankItem(item, { q, hints, center }) {
+function rankItem(item, { q, hints, center, radiusKm }) {
   let score = 100;
   score += exactBoost(item.title, q) * 10;
   if (hints.includes(item.group)) score -= 55;
@@ -154,12 +216,37 @@ function rankItem(item, { q, hints, center }) {
     const d = haversineKm(center.lat, center.lng, item.coordinates.lat, item.coordinates.lng);
     if (d != null) {
       item.distanceKm = Number(d.toFixed(1));
+      if (radiusKm != null && d > radiusKm) {
+        item._outOfRadius = true;
+      }
       if (d <= 5) score -= 12;
       else if (d <= 15) score -= 6;
       else if (d > 40) score += 8;
     }
   }
   return score;
+}
+
+function sortItems(items, sort, center) {
+  const mode = sort || 'relevance';
+  if (mode === 'newest') {
+    return [...items].sort((a, b) => {
+      const at = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const bt = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return bt - at;
+    });
+  }
+  if (mode === 'nearest' && center) {
+    return [...items].sort((a, b) => (a.distanceKm ?? 9999) - (b.distanceKm ?? 9999));
+  }
+  if (mode === 'price') {
+    return [...items].sort((a, b) => {
+      const ap = a.priceAmount ?? Number.POSITIVE_INFINITY;
+      const bp = b.priceAmount ?? Number.POSITIVE_INFINITY;
+      return ap - bp;
+    });
+  }
+  return items;
 }
 
 export const searchService = {
@@ -182,6 +269,7 @@ export const searchService = {
   },
 
   async search(query = {}) {
+    const started = Date.now();
     const rawQ = String(query.q || '').trim();
     if (!rawQ) throw new AppError('Enter a search term.', 400, 'VALIDATION_ERROR');
 
@@ -189,24 +277,47 @@ export const searchService = {
     const normalized = normalizeQuery(rawQ);
     const aliases = await resolveAliases(pool, normalized);
     const aliasExpand = aliases.map((a) => a.canonical).filter(Boolean);
-    const searchTerms = [...new Set([normalized, ...aliasExpand.map(normalizeQuery)])];
+    const searchTerms = [...new Set([normalized, ...aliasExpand.map(normalizeQuery)].filter(Boolean))];
 
     let category = query.category || 'all';
     const hints = detectCategoryHints(normalized);
+    const fxPairs = detectFxPairs(normalized);
+    if (fxPairs.length) hints.push('fx');
+    const uniqueHints = [...new Set(hints)];
     const entityQ = stripCategoryWords(normalized);
+    // Prefer alias canonical when it better reflects the entity (e.g. lekki epe → lekki-epe expressway)
+    const aliasCanonical = aliasExpand.map(normalizeQuery).find((c) => c && c !== normalized && c.length >= 3);
     // Only force a sole category when the query is category-only (e.g. "fuel near me").
-    // "traffic Lekki" keeps all buckets with traffic ranked first.
-    const categoryOnly = !entityQ && hints.length > 0;
-    if (category === 'all' && categoryOnly && hints.length === 1) {
-      category = hints[0];
+    const categoryOnly = !entityQ && uniqueHints.length > 0;
+    if (category === 'all' && categoryOnly && uniqueHints.length === 1) {
+      category = uniqueHints[0];
     }
-    const primaryTerm = entityQ || (categoryOnly ? '' : normalized);
+    if (category === 'all' && fxPairs.length && !entityQ.replace(/\b(usd|gbp|eur|ngn|dollar|pound|euro|today|to|naira)\b/gi, '').trim()) {
+      category = 'fx';
+    }
+    let primaryTerm = entityQ || (categoryOnly ? '' : normalized);
+    if (aliasCanonical && primaryTerm) {
+      // Only replace entity term when alias clearly expands the same phrase (not a short hijack)
+      const aliasLooksLikeExpansion =
+        aliasCanonical.includes(primaryTerm) ||
+        primaryTerm.includes(aliasCanonical.split(' ')[0]) ||
+        aliases.some((a) => normalizeQuery(a.alias) === normalized || normalizeQuery(a.alias) === primaryTerm);
+      if (aliasLooksLikeExpansion) {
+        const strippedAlias = stripCategoryWords(aliasCanonical);
+        if (strippedAlias && strippedAlias.length >= primaryTerm.length) primaryTerm = strippedAlias;
+      }
+    } else if (aliasCanonical && !primaryTerm && !categoryOnly) {
+      primaryTerm = stripCategoryWords(aliasCanonical) || aliasCanonical;
+    }
     const like = primaryTerm ? `%${escapeLike(primaryTerm)}%` : '%';
     const limit = Math.min(Number(query.limit) || 20, 40);
     const perBucket = query.mode === 'suggest' ? 5 : 8;
     const freshness = query.freshness || 'recent';
     const source = query.source || 'all';
     const page = Math.max(1, Number(query.page) || 1);
+    const sort = query.sort || 'relevance';
+    const radiusKm = query.radiusKm != null ? Number(query.radiusKm) : null;
+    const nearMe = /\bnear\s+me\b/i.test(rawQ);
 
     const center = await resolveContextCoords(pool, {
       locationId: query.locationId,
@@ -216,7 +327,7 @@ export const searchService = {
 
     const want = (group) => {
       if (category === 'all') {
-        if (categoryOnly) return hints.includes(group);
+        if (categoryOnly) return uniqueHints.includes(group);
         return true;
       }
       return category === group;
@@ -283,6 +394,11 @@ export const searchService = {
                  OR lower(fs.name) % lower($2)
                  OR COALESCE(fs.brand,'') ILIKE $1
                  OR COALESCE(loc.name,'') ILIKE $1
+                 OR EXISTS (
+                   SELECT 1 FROM fuel_station_aliases fsa
+                   WHERE fsa.station_id = fs.id
+                     AND (lower(fsa.alias) ILIKE $1 OR lower(fsa.alias) % lower($2))
+                 )
                  OR loc.lga_id IN (
                    SELECT l.id FROM lgas l WHERE l.name ILIKE $1
                  )
@@ -308,6 +424,7 @@ export const searchService = {
                   : s.price_amount != null
                     ? `Petrol · ₦${Number(s.price_amount).toLocaleString('en-NG')}`
                     : 'Fuel station',
+              priceAmount: s.price_amount != null ? Number(s.price_amount) : null,
               sourceType: 'community',
               sourceLabel: 'Community Report',
               updatedAt: s.last_report_at,
@@ -441,6 +558,7 @@ export const searchService = {
              LEFT JOIN roads rd ON rd.id = tr.road_id
              LEFT JOIN locations loc ON loc.id = r.location_id
              WHERE r.visibility = 'public'
+               AND r.status IN ('submitted','active','confirmed','stale')
                ${reportFreshSql}
                ${sourceSql}
                AND (
@@ -449,6 +567,11 @@ export const searchService = {
                  OR COALESCE(rd.name,'') ILIKE $1
                  OR COALESCE(loc.name,'') ILIKE $1
                  OR lower(r.title) % lower($2)
+                 OR EXISTS (
+                   SELECT 1 FROM road_aliases ra
+                   WHERE ra.road_id = rd.id
+                     AND (lower(ra.alias) ILIKE $1 OR lower(ra.alias) % lower($2))
+                 )
                )
              ORDER BY COALESCE(r.last_confirmed_at, r.occurred_at, r.created_at) DESC
              LIMIT $3`,
@@ -547,6 +670,9 @@ export const searchService = {
                  OR ou.title ILIKE $1
                  OR COALESCE(ou.summary,'') ILIKE $1
                  OR lower(ou.title) % lower($2)
+                 OR COALESCE(os.short_name,'') ILIKE $1
+                 OR COALESCE(os.organization_name,'') ILIKE $1
+                 OR COALESCE(loc.name,'') ILIKE $1
                )
              ORDER BY ou.published_at DESC NULLS LAST
              LIMIT $3`,
@@ -572,6 +698,67 @@ export const searchService = {
             }))
           )
           .catch(() => [])
+      );
+    } else jobs.push(Promise.resolve([]));
+
+    if (want('fx') && (category === 'fx' || fxPairs.length > 0 || uniqueHints.includes('fx'))) {
+      const pairs = fxPairs.length
+        ? fxPairs
+        : [
+            { base: 'USD', quote: 'NGN', label: 'USD/NGN' },
+            { base: 'GBP', quote: 'NGN', label: 'GBP/NGN' },
+            { base: 'EUR', quote: 'NGN', label: 'EUR/NGN' },
+          ];
+      jobs.push(
+        (async () => {
+          try {
+            const out = [];
+            for (const pair of pairs.slice(0, 3)) {
+              const res = await pool.query(
+                `SELECT o.id, o.base_currency, o.quote_currency, o.rate, o.rate_type,
+                        o.observed_at, s.display_name AS source_name
+                 FROM fx_observations o
+                 JOIN fx_sources s ON s.id = o.source_id
+                 WHERE o.base_currency = $1 AND o.quote_currency = $2
+                 ORDER BY
+                   CASE WHEN o.rate_type = 'official_reference' THEN 0 ELSE 1 END,
+                   o.observed_at DESC
+                 LIMIT 1`,
+                [pair.base, pair.quote]
+              );
+              const row = res.rows[0];
+              if (!row) continue;
+              const rate = row.rate != null ? Number(row.rate) : null;
+              out.push({
+                group: 'fx',
+                type: 'fx_rate',
+                id: row.id,
+                title: `${row.base_currency}/${row.quote_currency}`,
+                subtitle: [
+                  rate != null ? `₦${rate.toLocaleString('en-NG', { maximumFractionDigits: 2 })}` : null,
+                  row.source_name,
+                  row.rate_type ? String(row.rate_type).replace(/_/g, ' ') : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · '),
+                locationName: null,
+                status: 'Reference rate — not every market',
+                priceAmount: rate,
+                sourceType: 'official',
+                sourceLabel: row.source_name || 'FX source',
+                updatedAt: row.observed_at,
+                freshnessLabel: freshnessLabel(row.observed_at),
+                freshnessMinutes: ageMinutes(row.observed_at),
+                href: `/fx?base=${row.base_currency}&quote=${row.quote_currency}`,
+                coordinates: null,
+                matchKind: 'exact',
+              });
+            }
+            return out;
+          } catch {
+            return [];
+          }
+        })()
       );
     } else jobs.push(Promise.resolve([]));
 
@@ -665,13 +852,19 @@ export const searchService = {
     const scored = items
       .map((item) => ({
         ...item,
-        _score: rankItem(item, { q: primaryTerm, hints, center }),
+        _score: rankItem(item, { q: primaryTerm, hints: uniqueHints, center, radiusKm: nearMe || center ? radiusKm : null }),
       }))
-      .sort((a, b) => a._score - b._score);
+      .filter((item) => !item._outOfRadius)
+      .map(({ _outOfRadius, ...rest }) => rest);
 
-    const total = scored.length;
+    let ordered = scored.sort((a, b) => a._score - b._score);
+    if (sort !== 'relevance') {
+      ordered = sortItems(ordered, sort, center);
+    }
+
+    const total = ordered.length;
     const start = (page - 1) * limit;
-    const pageItems = scored.slice(start, start + limit).map(({ _score, ...rest }) => rest);
+    const pageItems = ordered.slice(start, start + limit).map(({ _score, ...rest }) => rest);
 
     const groups = {};
     for (const item of pageItems) {
@@ -679,16 +872,18 @@ export const searchService = {
       groups[item.group].push(item);
     }
 
-    return {
+    const payload = {
       q: rawQ,
       interpreted: {
         normalized,
         entityQuery: primaryTerm,
         category,
-        categoryHints: hints,
+        categoryHints: uniqueHints,
         aliasesApplied: aliases.map((a) => ({ alias: a.alias, canonical: a.canonical })),
         searchTerms,
-        nearMe: /\bnear\s+me\b/i.test(rawQ),
+        nearMe,
+        sort,
+        radiusKm: nearMe || center ? radiusKm : null,
         locationContext: center
           ? { lat: center.lat, lng: center.lng, source: center.source }
           : null,
@@ -709,6 +904,19 @@ export const searchService = {
         'Explore nearby',
       ],
     };
+
+    if (query.mode !== 'suggest') {
+      recordQueryMetric({
+        normalized: normalized || rawQ.toLowerCase().slice(0, 120),
+        category,
+        resultCount: total,
+        latencyMs: Date.now() - started,
+        hadLocation: Boolean(center),
+        mode: 'full',
+      }).catch(() => {});
+    }
+
+    return payload;
   },
 
   async listRecent(userId, { limit = 8 } = {}) {

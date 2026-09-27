@@ -498,7 +498,10 @@ export const homeService = {
             })
             .catch(() => ({ items: [] })),
       locationId
-        ? officialService.forUserLocation({ locationId, limit: 3 }).catch(() => [])
+        ? officialService
+            .forUserLocation({ locationId, limit: 3 })
+            .then((data) => data.items || [])
+            .catch(() => [])
         : Promise.resolve([]),
       fxService.getLatest({ bases: ['USD'] }).catch(() => ({ items: [] })),
       notificationService.list(userId, { limit: 8 }).catch(() => ({ items: [] })),

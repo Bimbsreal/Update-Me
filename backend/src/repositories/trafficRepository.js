@@ -393,6 +393,40 @@ export const trafficRepository = {
       counts[row.severity] = row.count;
     }
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
-    return { total, bySeverity: counts };
+
+    const eventParams = [];
+    const eventWhere = [
+      `e.status IN ('reported','investigating','confirmed','active','improving')`,
+      `e.merged_into_event_id IS NULL`,
+      `e.freshness_state <> 'expired'`,
+    ];
+    if (locationId) {
+      eventParams.push(locationId);
+      eventWhere.push(`e.location_id = $${eventParams.length}`);
+    }
+    const eventStats = await getPool().query(
+      `SELECT COUNT(*)::int AS active_events,
+              COUNT(*) FILTER (WHERE e.severity IN ('heavy','standstill','blocked'))::int AS high_severity,
+              COUNT(*) FILTER (
+                WHERE COALESCE(e.observed_at, e.updated_at) >= NOW() - INTERVAL '60 minutes'
+              )::int AS observed_last_hour
+       FROM traffic_events e
+       WHERE ${eventWhere.join(' AND ')}`,
+      eventParams
+    );
+    const er = eventStats.rows[0] || {};
+
+    return {
+      total,
+      bySeverity: counts,
+      activeEvents: er.active_events || 0,
+      highSeverityEvents: er.high_severity || 0,
+      activityWindow: {
+        hours: 1,
+        observationCount: er.observed_last_hour || 0,
+        note: `Based on ${er.observed_last_hour || 0} live traffic events observed or updated in the last hour. Not a claim of every road in the area.`,
+      },
+      asOf: new Date().toISOString(),
+    };
   },
 };

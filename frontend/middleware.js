@@ -2,7 +2,15 @@ import { NextResponse } from 'next/server';
 
 const COOKIE_NAME = 'um_session';
 
-const protectedPrefixes = ['/home', '/onboarding', '/app', '/explore', '/traffic'];
+/** Authenticated-only surfaces. Public information pages are intentionally excluded. */
+const protectedPrefixes = [
+  '/home',
+  '/onboarding',
+  '/app',
+  '/notifications',
+  '/profile',
+  '/admin',
+];
 
 export function middleware(request) {
   const { pathname } = request.nextUrl;
@@ -29,10 +37,12 @@ export const config = {
     '/home/:path*',
     '/onboarding',
     '/app/:path*',
-    '/explore',
-    '/explore/:path*',
-    '/traffic',
-    '/traffic/:path*',
+    '/notifications',
+    '/notifications/:path*',
+    '/profile',
+    '/profile/:path*',
+    '/admin',
+    '/admin/:path*',
     '/login',
     '/register',
   ],

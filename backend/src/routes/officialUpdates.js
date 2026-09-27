@@ -6,6 +6,7 @@ import {
   createOfficialSource,
   getOfficialAdminStatus,
   getOfficialSourceAdmin,
+  getOfficialSourcePublic,
   getOfficialUpdate,
   listOfficialSourcesPublic,
   listOfficialTaxonomy,
@@ -31,6 +32,7 @@ const router = Router();
 
 router.get('/taxonomy', listOfficialTaxonomy);
 router.get('/sources', listOfficialSourcesPublic);
+router.get('/sources/:id', getOfficialSourcePublic);
 router.get('/nearby', nearbyOfficialUpdates);
 router.get('/context', contextOfficialUpdates);
 router.get('/', listOfficialUpdates);

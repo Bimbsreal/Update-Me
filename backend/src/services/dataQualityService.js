@@ -163,7 +163,7 @@ export function buildQualityMetadata(row = {}, policy = {}, now = new Date()) {
     label: corroborationLabel(count),
   };
 
-  return {
+  const quality = {
     freshness: {
       state: freshness.state,
       label: freshness.label,
@@ -178,6 +178,70 @@ export function buildQualityMetadata(row = {}, policy = {}, now = new Date()) {
     verification,
     corroboration,
   };
+
+  // Lazy import avoids hard cycle if intelligence imports this module.
+  try {
+    // Inline lightweight confidence (mirrors qualityIntelligenceService rules).
+    const reasons = [];
+    let score = 0;
+    if (source.type === 'official') {
+      score += 40;
+      reasons.push('Approved official source');
+    } else {
+      reasons.push(source.type === 'aggregated' ? 'Aggregated source' : 'Community-reported');
+      if (source.type === 'aggregated') score += 15;
+    }
+    if (verification.state === 'official') {
+      score += 20;
+      reasons.push('Official verification state');
+    } else if (verification.state === 'confirmed') {
+      score += 15;
+      reasons.push('Community confirmed (not official)');
+    } else if (verification.state === 'under_review') {
+      score -= 10;
+      reasons.push('Currently under review');
+    } else {
+      reasons.push('Not officially verified');
+    }
+    if (freshness.state === 'fresh') {
+      score += 25;
+      reasons.push('Within fresh window for this category');
+    } else if (freshness.state === 'recent') {
+      score += 15;
+      reasons.push('Recent observation');
+    } else if (freshness.state === 'aging') {
+      score += 5;
+      reasons.push('Aging — still within useful window');
+    } else if (freshness.state === 'stale') {
+      score -= 15;
+      reasons.push('Marked stale');
+    } else if (freshness.state === 'expired') {
+      score -= 40;
+      reasons.push('Expired — not treated as current');
+    }
+    if (count >= 3) {
+      score += 20;
+      reasons.push('3+ independent corroborating reports');
+    } else if (count === 2) {
+      score += 10;
+      reasons.push('2 independent corroborating reports');
+    }
+    if (!(row.location_id || row.locationId)) {
+      score -= 10;
+      reasons.push('Missing location context');
+    }
+    const level = score >= 55 ? 'high' : score >= 30 ? 'medium' : 'low';
+    quality.confidence = {
+      level,
+      label: level === 'high' ? 'High' : level === 'medium' ? 'Medium' : 'Low',
+      reasons,
+      note: 'Confidence is contextual and explainable — not absolute truth.',
+    };
+  } catch {
+    /* confidence optional */
+  }
+
+  return quality;
 }
 
 export function buildAboutLines(quality, { conflict = null } = {}) {
@@ -518,7 +582,7 @@ export async function applyFreshnessTransitions(options) {
 
 export async function adminQualitySummary() {
   const pool = getPool();
-  const [freshness, awaiting, conflicts, highDup, corrections, syncFail, staleSources] =
+  const [freshness, awaiting, conflicts, highDup, corrections, syncFail, staleSources, locationIssues] =
     await Promise.all([
       pool.query(
         `SELECT
@@ -582,9 +646,26 @@ export async function adminQualitySummary() {
            AND (last_success_at IS NULL
                 OR last_success_at < NOW() - (sync_interval_minutes || ' minutes')::interval * 3)`
       ),
+      pool.query(
+        `SELECT
+           COUNT(*) FILTER (
+             WHERE status = 'active'
+               AND type IN ('area','lga','city','landmark','road')
+               AND (latitude IS NULL OR longitude IS NULL)
+           )::int AS missing_coords,
+           COUNT(*) FILTER (
+             WHERE status = 'inactive'
+               AND EXISTS (
+                 SELECT 1 FROM reports r
+                 WHERE r.location_id = locations.id AND r.status <> 'removed'
+               )
+           )::int AS inactive_referenced
+         FROM locations`
+      ),
     ]);
 
   const f = freshness.rows[0] || {};
+  const locQ = locationIssues.rows[0] || {};
   return {
     freshReports: f.fresh || 0,
     recentReports: f.recent || 0,
@@ -597,6 +678,9 @@ export async function adminQualitySummary() {
     repeatedCorrections: corrections.rows[0]?.c || 0,
     failedOfficialSyncs: syncFail.rows[0]?.c || 0,
     sourcesNotSyncedRecently: staleSources.rows[0]?.c || 0,
+    locationsMissingCoordinates: locQ.missing_coords || 0,
+    incompleteLocations: locQ.missing_coords || 0,
+    inactiveLocationsStillReferenced: locQ.inactive_referenced || 0,
   };
 }
 

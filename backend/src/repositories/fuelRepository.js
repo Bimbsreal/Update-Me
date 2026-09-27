@@ -551,24 +551,35 @@ export const fuelRepository = {
   },
 
   async createFuelReport(fields) {
+    const product = await getPool().query(
+      `SELECT id FROM fuel_products WHERE code = $1 AND is_active = TRUE LIMIT 1`,
+      [fields.fuelType]
+    );
+    const pricingContext = fields.pricingContext || 'retail_pump';
     const result = await getPool().query(
       `INSERT INTO fuel_reports (
-         report_id, station_id, fuel_type, availability,
-         price_amount, price_currency, price_unit, queue_condition
+         report_id, station_id, fuel_type, product_id, pricing_context, availability,
+         price_amount, price_currency, price_unit, queue_condition,
+         published_at, effective_at
        ) VALUES (
-         $1,$2,$3::fuel_product_type,$4::fuel_availability,
-         $5,$6,$7,$8::fuel_queue_condition
+         $1,$2,$3::fuel_product_type,$4,$5::fuel_pricing_context,$6::fuel_availability,
+         $7,$8,$9,$10::fuel_queue_condition,
+         COALESCE($11::timestamptz, NOW()), COALESCE($12::timestamptz, NOW())
        )
        RETURNING id`,
       [
         fields.reportId,
         fields.stationId,
         fields.fuelType,
+        product.rows[0]?.id || null,
+        pricingContext,
         fields.availability,
         fields.priceAmount ?? null,
         fields.priceCurrency || 'NGN',
         fields.priceUnit || 'litre',
         fields.queueCondition || 'unknown',
+        fields.publishedAt || null,
+        fields.effectiveAt || fields.observedAt || null,
       ]
     );
     return this.findFuelReportById(result.rows[0].id);
@@ -647,12 +658,24 @@ export const fuelRepository = {
     };
   },
 
-  async summary({ locationId = null } = {}) {
+  async summary({ locationId = null, fuelType = 'pms', hours = 24 } = {}) {
     const params = [];
-    let locationFilter = '';
+    const filters = [
+      `r.visibility = 'public'`,
+      `r.status IN ('submitted','active','confirmed')`,
+      `(r.expires_at IS NULL OR r.expires_at > NOW())`,
+    ];
     if (locationId) {
       params.push(locationId);
-      locationFilter = `AND r.location_id = $${params.length}`;
+      filters.push(`r.location_id = $${params.length}`);
+    }
+    const windowHours = Math.min(Math.max(Number(hours) || 24, 1), 168);
+    params.push(windowHours);
+    const hoursParam = params.length;
+    let typeParam = null;
+    if (fuelType) {
+      params.push(fuelType);
+      typeParam = params.length;
     }
 
     const result = await getPool().query(
@@ -663,17 +686,35 @@ export const fuelRepository = {
          COUNT(*) FILTER (WHERE fr.availability = 'unavailable')::int AS unavailable,
          COUNT(*) FILTER (WHERE fr.fuel_type = 'pms')::int AS pms,
          COUNT(*) FILTER (WHERE fr.fuel_type = 'ago')::int AS ago,
-         COUNT(*) FILTER (WHERE fr.fuel_type = 'lpg')::int AS lpg
+         COUNT(*) FILTER (WHERE fr.fuel_type = 'dpk')::int AS dpk,
+         COUNT(*) FILTER (WHERE fr.fuel_type = 'lpg')::int AS lpg,
+         MIN(fr.price_amount) FILTER (
+           WHERE fr.price_amount IS NOT NULL
+             AND fr.pricing_context = 'retail_pump'
+             AND COALESCE(r.occurred_at, r.created_at) >= NOW() - make_interval(hours => $${hoursParam})
+             ${typeParam ? `AND fr.fuel_type = $${typeParam}::fuel_product_type` : ''}
+         ) AS min_price,
+         MAX(fr.price_amount) FILTER (
+           WHERE fr.price_amount IS NOT NULL
+             AND fr.pricing_context = 'retail_pump'
+             AND COALESCE(r.occurred_at, r.created_at) >= NOW() - make_interval(hours => $${hoursParam})
+             ${typeParam ? `AND fr.fuel_type = $${typeParam}::fuel_product_type` : ''}
+         ) AS max_price,
+         COUNT(*) FILTER (
+           WHERE fr.price_amount IS NOT NULL
+             AND fr.pricing_context = 'retail_pump'
+             AND COALESCE(r.occurred_at, r.created_at) >= NOW() - make_interval(hours => $${hoursParam})
+             ${typeParam ? `AND fr.fuel_type = $${typeParam}::fuel_product_type` : ''}
+         )::int AS range_observations
        FROM fuel_reports fr
        JOIN reports r ON r.id = fr.report_id
-       WHERE r.visibility = 'public'
-         AND r.status IN ('submitted','active','confirmed')
-         AND (r.expires_at IS NULL OR r.expires_at > NOW())
-         ${locationFilter}`,
+       WHERE ${filters.join(' AND ')}`,
       params
     );
 
     const row = result.rows[0];
+    const minP = row.min_price != null ? Number(row.min_price) : null;
+    const maxP = row.max_price != null ? Number(row.max_price) : null;
     return {
       total: row.total,
       byAvailability: {
@@ -684,8 +725,23 @@ export const fuelRepository = {
       byFuelType: {
         pms: row.pms,
         ago: row.ago,
+        dpk: row.dpk,
         lpg: row.lpg,
       },
+      observedRange:
+        minP != null && maxP != null
+          ? {
+              min: minP,
+              max: maxP,
+              currency: 'NGN',
+              unit: 'litre',
+              observationCount: row.range_observations || 0,
+              windowHours,
+              fuelType: fuelType || null,
+              note: `Based on ${row.range_observations || 0} retail pump observations in the last ${windowHours} hours. Not a claim of every station in the area.`,
+            }
+          : null,
+      asOf: new Date().toISOString(),
     };
   },
 };
